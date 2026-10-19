@@ -53,3 +53,11 @@ APT 源文件 SHA-256：`8f33259a79a8149bed86c66e103fb4c3fa70f9219cd7ff315b6cc30
 06.1 新建 `.gitignore`、`.gitattributes`、`deploy/.env.example` 和 AGENTS.md：统一忽略私有材料及运行产物、文本 LF、环境模板只含空密钥/占位符。实际检查：35 个应忽略路径、14 个应可跟踪路径符合预期，所有忽略来源为仓库 `.gitignore`；5 个文件为 UTF-8/LF，无尾随空白；环境模板 17 个键无重复，密钥为空，URL 仅含占位符；四张 PNG 和 Git skill 字节不变。`git diff --check` 及新文件空白检查无发现；未检出令牌/私钥特征。Ruff 和 pytest 命令均因工具未安装、Python 工程/测试未初始化而未运行，不记作通过。
 
 AI 使用记录补充：AI 执行只读诊断并在批准范围内编写 06.1 配置/规则；用户明确 root、网络及逐节提交边界，尚未审阅本节 diff；待确认网络方案及 06.1 提交，未进入 06.2。
+
+## mirrored 与 daemon 代理后续验证（2026-10-19）
+
+用户批准 mirrored，并在确认默认值后显式关闭 autoProxy；WSL 已重启，普通用户没有代理环境变量。按用户批准的四项 root 操作在 WSL 内用 LF heredoc 写入 Docker 服务覆盖配置，完成重载与重启；已实际核对 systemctl Environment 和 docker info 中 HTTP/HTTPS/NO_PROXY 字段，未写客户端 proxies，未配置 build 代理。
+
+V1 已通过：registry 认证入口响应符合预期，官方 PyPI/GitHub 直连成功，本地 curl 直接访问进程。V2 已通过：hello-world 首次拉取、执行成功，退出码为 0。原 V3 结案：容器直达宿主回环代理=不可达（预期），不记作环境故障；此前探针退出码为 1，测试容器已清理。用户明确不改代理监听或既有网络配置，新增 V3′只验证无代理容器的直连能力，当前待执行。具体判据及 build 代理待定项见 ADR-016。代理地址、端口、宿主机连接细节仅留在私有 local-reference/。
+
+root 命令说明固定为目的、影响面、回滚，已补入 AGENTS.md。后续 06.3 前复查 Windows/WSL 的数据库、缓存与 API 监听；已发现 Windows 默认数据库和缓存端口有占用，后续采用用户批准的替代宿主端口并同步开发连接配置。当前没有启动 Compose，也没有更改现有服务。
