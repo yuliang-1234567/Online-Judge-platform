@@ -1,0 +1,67 @@
+# Private documents and local reference material
+/local-reference/
+*.docx
+~$*
+/求职规划*
+/简历*
+
+# Local environment and credentials; examples contain placeholders only
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+credentials.json
+credentials-*.json
+secrets/
+
+# Python environments, caches, test and build output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+*.egg-info/
+build/
+dist/
+
+# Frontend dependencies and generated output
+node_modules/
+.vite/
+
+# Database files, backups and development service data
+*.sqlite
+*.sqlite3
+*.db
+*.db-*
+dump*.sql
+*.sql.gz
+*.sql.bz2
+backups/
+mysql_data/
+redis_data/
+/deploy/data/
+
+# Judge runtime and real test data; backend/tests/fixtures stays trackable
+judge-work/
+/testcases/
+/hidden-testcases/
+/deploy/testcases/
+container-logs/
+logs/
+*.log
+
+# Editor and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*~

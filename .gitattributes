@@ -1,0 +1,10 @@
+# Text is stored and checked out with LF, including scripts used in WSL.
+* text=auto eol=lf
+
+# Preserve reference images and other binary documents byte for byte.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
