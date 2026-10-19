@@ -1,20 +1,22 @@
 # 在线判题系统（OJ）
 
-项目设计文档  v1.1
+项目设计文档  v1.2
 
 Project 01 · Python 后端 / Agent 求职主项目
 
-| 文档版本 | v1.1（2026-10-09），替代 v1.0 |
+| 文档版本 | v1.2（2026-10-19），替代 v1.1；历史变更保留在附录 C |
 | --- | --- |
 | 设计定位 | MVP + 可面试深化版 |
 | 核心技术 | FastAPI（async）/ MySQL 8 / Redis / Celery / Docker / Vue3 + TypeScript / Nginx |
-| 目标阶段 | 2026.10 – 2027.01：核心版本于 2027-01-10 冻结（建议值，见 2.4） |
+| 目标阶段 | 2026.10 – 2027.01：核心版本于 2027-01-10 冻结（已确认，见 2.4） |
 | 设计依据 | 《求职规划02》中的项目一 OJ 方案；《OJ 设计文档改进点分析》（本版的修改依据） |
-| 本版重点 | 排行榜计分粒度 · 判题任务可靠性闭环 · 沙箱细节与测试数据保护 · 接口与数据模型补全 · 里程碑落到日期 |
+| 本版重点 | 权限即时生效 · 隐藏输出保护 · 在途编辑约束与限制快照 · 追踪与幂等分离 · WSL2 与重排里程碑 |
 
 设计原则：　少而深。核心版本优先保证判题链路稳定、可解释、可测试、可部署；比赛、讨论、多语言等均属于后置增强项。v1.1 追加一条：可靠性先于功能——任何会让提交卡死、重复计分、泄露测试数据的缺陷，优先级高于任何新功能。
 
 如何阅读本文：　章节顶部带蓝色竖线的“v1.1 变更”条，说明该章相对 v1.0 改了什么，并给出对应的改进项编号（I-xx / D-xx）；每一项的问题与理由见《OJ 设计文档改进点分析》。附录 C 汇总了全部变更。
+
+v1.2 维护约定：docs/project-design.md 是仓库内持续维护的设计主本；DOCX 原件保留在私有 local-reference/，不入库。历史 v1.1 变更说明保留原版本标记。协作规则见 [ai-workflow.md](ai-workflow.md)，开发准备模板见 [development-workflow.md](development-workflow.md)。OpenAPI、代码与本设计不一致时，先停止并报告，由用户确认处理方案。
 
 ## 目录
 
@@ -42,7 +44,7 @@ Project 01 · Python 后端 / Agent 求职主项目
 | 20 | 附录：关键决策记录 | ADR-001 ～ ADR-012 |
 | A | 附录 A：MVP 开发验收清单 |  |
 | B | 附录 B：需求追踪矩阵 | 需求 → 接口 → 表 → 测试 |
-| C | 附录 C：v1.0 → v1.1 变更摘要 |  |
+| C | 附录 C：版本变更摘要 |  |
 
 ## 1. 项目概述
 
@@ -50,7 +52,7 @@ Project 01 · Python 后端 / Agent 求职主项目
 
 来源约束：　原规划明确要求保留 OJ，并将核心 MVP 收敛到“用户与 RBAC、题库、提交 → Redis/Celery → 判题 Worker → Docker、结果回写、提交记录、Redis ZSET 排行榜、限流、超时、失败重试、幂等、Vue3/Monaco、Swagger/OpenAPI、Docker Compose、Nginx、云部署”。
 
-本设计文档把这些目标落成可开发的系统结构、接口边界、数据模型、状态机和验收标准。凡未在原规划中明确的具体参数，以“设计建议”或“初始建议”标识，含义是：先用这个值做出 MVP，上线前用真实测试校准；它们不是原规划的既定事实，更不应直接写进简历。
+本设计文档把这些目标落成可开发的系统结构、接口边界、数据模型、状态机和验收标准。OJ 的具体范围以本设计的 P0/P1 为准；开发准备方案中的“必做/应做/可选”是通用模板，不改变本项目优先级。凡未在原规划中明确的具体参数，以“设计建议”或“初始建议”标识，含义是：先用这个值做出 MVP，上线前用真实测试校准；它们不是原规划的既定事实，更不应直接写进简历。
 
 ### 1.1 术语
 
@@ -115,18 +117,18 @@ v1.1 变更｜新增 FR-11/FR-12 对应的目标；MVP 增加“注册、恢复�
 
 ### 2.4 关键默认决策
 
-下面 8 项是 v1.1 为了让文档能直接往下走而选定的默认值。如果与你的想法不同，在 M1 开始前修改最便宜；每一项的备选与影响见《改进点分析》第 5 章。
+下面8项由v1.1提出，在v1.2按用户决定确认；冻结日与ID范围采用本次批准值。具体可靠性机制按17.3留到W5复核，不能据此提前改变流程。
 
-| # | 决策点 | v1.1 的默认选择 |
+| # | 决策点 | v1.2 确认的选择 |
 | --- | --- | --- |
 | 1 | 题库与排行榜是否匿名可读 | 匿名可读（按 IP 限流）；提交与个人数据需登录；README 提供演示账号。 |
 | 2 | Worker 访问 Docker 的方式 | Worker 容器挂载 docker.sock；用户代码容器没有任何 socket 挂载（ADR-008）。 |
 | 3 | 排行规则 | 按通过题数降序；同分时，“最后一次首次通过的时间”早者在前。 |
 | 4 | 判题容器粒度 | 每个测试点一个一次性容器（ADR-011）。 |
 | 5 | 首批语言 | M2 先用 Python 打通；C++ 放 M3，延期则砍。 |
-| 6 | 冻结日期 | 2027-01-10（建议值，按期末安排调整；压测与故障演练必须在 12 月完成）。 |
+| 6 | 冻结日期 | 2027-01-10（已确认）；压测与故障演练在 2026 年 12 月完成；进度不足只削减范围，不跳过严格级理解与正确性检查。 |
 | 7 | 登出与 refresh token | MVP 只做短期 access token，不做 refresh 与吊销黑名单。 |
-| 8 | ID 形式 | BIGINT 自增；接口返回数字；访问控制靠“归属校验”，不靠 ID 不可猜。 |
+| 8 | ID 形式 | BIGINT 自增；项目规模下 ID 远小于 2^53，接口继续返回数字；访问控制靠“归属校验”，不靠 ID 不可猜。 |
 
 ## 3. 需求定义
 
@@ -190,9 +192,9 @@ v1.1 变更｜重绘架构图；新增 4.3（Worker 与 Docker 的关系）、4.
 
 - 执行层：Docker 容器完成编译、运行与资源约束；比对在 Worker 侧完成，期望输出永不进入容器。
 
-![原始图1](figures/reference/architecture-v1.1.png)
+[图1 Mermaid 单一来源](figures/architecture.md)（[v1.1 原图存档](figures/reference/architecture-v1.1.png)）
 
-图 1  OJ 总体架构（v1.1 重绘）
+图 1  OJ 总体架构（v1.2 修正任务来源、Beat 调度方向及 Docker 访问方向）
 
 ### 4.2 核心设计取舍
 
@@ -221,6 +223,8 @@ Worker 要启动判题容器，自己就必须能访问 Docker daemon。这与�
 已知风险：　挂载 docker.sock 等价于给 Worker 进程宿主机 root 级权限。MVP 接受这一点，并用三条措施缓解：Worker 与公网服务分属不同容器、不对外暴露任何端口；Worker 代码只调用有限的 Docker API；记录在 ADR-008，并把 docker-socket-proxy 与 rootless Docker 列为可选加固（7.6）。
 
 - 临时目录路径要一致：Worker 在容器内创建的工作目录，要挂载给判题容器时，bind mount 的源路径由宿主机的 Docker 解析。因此使用“宿主机路径与容器内路径相同”的 bind mount（例如两边都是 /var/oj/judge-work），避免挂载到不存在的路径。
+
+开发环境：工程位于 WSL2 Ubuntu 的 Linux 文件系统，例如 ~/projects/oj-platform，不在 /mnt/d 下开发；Windows D 盘仅保留文档备份。先评估 WSL 内原生 Docker Engine，Docker Desktop 作为备选，具体结果见 ADR-016。环境验收必须实际完成“Worker 写文件 → 判题容器读到同一文件 → 非 root 写输出 → 清理成功”，不以路径字符串相同代替验证。阶段06末尾探针限时半天，失败不阻塞认证切片，结果及原因写入 ADR-016 与 learning。
 
 - 判题镜像预先构建：运行时不拉镜像、不联网；镜像随部署脚本构建并在启动前校验存在。
 
@@ -259,7 +263,7 @@ v1.1 变更｜提交流程改为“落库事务 → 提交后入队 → claim �
 
 2. FastAPI 依次完成：鉴权 → 限流 → 参数校验（题目已发布、语言受支持、代码长度合法）→ 在途提交上限检查。
 
-3. 同一个事务内：写入 submissions（QUEUED，queued_at 为当前时间）；若 (user_id, request_id) 冲突，说明是重放：不再增加任何计数，直接读取并返回已有记录；否则对 user_problem_stats 做 upsert 并 attempts + 1；COMMIT。
+3. 同一个事务内：写入 submissions（QUEUED，queued_at 为当前时间）；若 (user_id, idempotency_key) 冲突，说明是重放：不再增加任何计数，直接读取并返回已有记录；否则对 user_problem_stats 做 upsert 并 attempts + 1，同时保存本次使用的时间、内存限制快照；COMMIT。提交接收与题目编辑的事务协调方式在 M1 严格级设计中确认。
 
 4. COMMIT 之后才向 judge 队列投递 submission_id。入队失败只记录日志，不影响响应——记录已持久化，由补偿扫描兜底（8.3）。
 
@@ -269,7 +273,7 @@ v1.1 变更｜提交流程改为“落库事务 → 提交后入队 → claim �
 
 7. claim：条件更新 QUEUED → RUNNING，同时写入 attempts + 1、worker_id、lease_expires_at；受影响行数为 0 说明已被他人处理或已是终态，任务直接结束。
 
-8. 读取题目与测试数据；需要编译则先在受限容器内编译；然后每个测试点启动一个新容器，运行、等待、取输出（期望输出不进入容器）。
+8. 读取题目与测试数据，运行限制使用该提交保存的快照；需要编译则先在受限容器内编译；然后每个测试点启动一个新容器，运行、等待、取输出（期望输出不进入容器）。
 
 9. Worker 侧按 7.3 的规则比对；遇到第一个非 AC 的测试点即停止；每个测试点结束后续租。
 
@@ -285,7 +289,7 @@ v1.1 变更｜提交流程改为“落库事务 → 提交后入队 → claim �
 
 关键原则：　HTTP 请求只负责“接收提交并排队”，不要在 FastAPI 请求线程内编译或运行用户代码；先提交事务，再入队；每一次状态变更都带前置条件。
 
-![原始图2](figures/reference/submission-sequence-v1.1.png)
+[图2 Mermaid 单一来源](figures/submission-sequence.md)（[v1.1 原图存档](figures/reference/submission-sequence-v1.1.png)）
 
 图 2  提交与判题时序（含失败路径）
 
@@ -299,7 +303,7 @@ v1.1 变更｜提交流程改为“落库事务 → 提交后入队 → claim �
 
 ### 5.3 状态与终态
 
-![原始图3](figures/reference/submission-state-v1.1.png)
+[图3 Mermaid 单一来源](figures/submission-state.md)（[v1.1 原图存档](figures/reference/submission-state-v1.1.png)）
 
 图 3  提交状态机
 
@@ -328,15 +332,17 @@ v1.1 变更｜模块改为独立小节（便于引用）；新增“判题执行
 
 | 职责 | 注册、登录、密码校验、JWT 签发与校验、角色与权限。 |
 | --- | --- |
-| 设计要点 | 密码用 argon2id（或 bcrypt）哈希；JWT 固定算法、短有效期；每个请求按 sub 读取用户的角色与状态（可加 60 s 以内的短 TTL 缓存），禁用账号立即生效。 |
+| 设计要点 | 密码用 argon2id（或 bcrypt）哈希；JWT 固定算法、短有效期；每次鉴权按 sub 对应的用户主键查询角色与账号状态，MVP 不缓存二者，禁用账号、降权立即生效。只有压测证明必要，才通过新的 ADR 讨论缓存。 |
 | 边界 | 普通用户只能访问自己的提交；管理员接口统一在 /api/v1/admin 下，由同一个依赖项做角色校验。 |
+
+初始管理员由 scripts/create_admin.py 一次性命令创建；密码来自环境变量或交互输入，不写入迁移、源码、命令行参数或日志。具体认证与事务实现由用户在 M1 严格级设计后编写；阶段06不实现该命令。
 
 ### 6.2 题库（problem）
 
 | 职责 | 题目、标签、难度、时间/内存限制、测试数据、发布/下线。 |
 | --- | --- |
 | 设计要点 | 对外 DTO 与管理端 DTO 严格分离：对外只含题面与样例用例；完整测试数据只在管理员接口出现。题目详情可缓存，缓存的是对外 DTO（10.2）。 |
-| 边界 | 题目发布前必须至少有 1 个测试点且至少 1 个样例；修改题目不回溯影响已有提交结果。 |
+| 边界 | 题目发布前必须至少有 1 个测试点且至少 1 个样例。有 QUEUED/RUNNING 提交时，禁止增删改测试点（包括顺序和样例标记）及修改时间、内存限制。提交接收与管理员编辑必须在并发下共同满足此约束，不能只“先查数量再修改”；具体事务方案在 M1 严格级设计中由用户确认。提交记录使用的限制快照；不重判历史提交。 |
 
 ### 6.3 提交（submission）
 
@@ -456,21 +462,19 @@ container = client.containers.run(
 
 #### 7.3.1 输出比对
 
-默认比对器：忽略每行行尾空白（空格、制表符、回车）和输出末尾多余的空行，其余逐字符比较。不做浮点容差、不做特殊判题。
+默认比对器以 UTF-8 编码的期望输出和用户程序原始输出字节为输入：先将 CRLF 规整为 LF；每行仅移除末尾 ASCII 空格（0x20）、制表符（0x09）和回车（0x0D）；随后删除输出末尾空行，其他字节保持原样后比较。不做 Unicode 归一化，不忽略 NBSP 等其他 Unicode 空白，也不以替换字符吞掉非法 UTF-8 字节。不做浮点容差或特殊判题。
 
-```python
-def normalize(raw: bytes) -> list[str]:
-    lines = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").split("\n")
-    lines = [ln.rstrip() for ln in lines]
-    while lines and lines[-1] == "":
-        lines.pop()
-    return lines
-```
+规则示例（文档约定，尚非已执行的测试）：
 
-```python
-def is_accepted(actual: bytes, expected: bytes) -> bool:
-    return normalize(actual) == normalize(expected)
-```
+| 期望 / 实际差异 | 结论 |
+| --- | --- |
+| 仅 CRLF、ASCII 行尾空格/制表符/回车、末尾空行不同 | 相同 |
+| 行首空格或行内空白不同 | 不同 |
+| 行尾多出 NBSP（U+00A0） | 不同 |
+| 预组字符与组合字符仅视觉相同 | 不同 |
+| 非法 UTF-8 字节与文本 U+FFFD | 不同，不能通过 replace 解码变为相同 |
+
+Comparator 核心实现留到对应小节，由用户按该规则编写；本次移除会扩大空白范围的示意实现。
 
 #### 7.3.2 测试点汇总与 Verdict 优先级
 
@@ -545,7 +549,7 @@ v1.1 变更｜幂等拆成四层；新增 lease、attempts 围栏、补偿扫描
 
 | 层 | 要防止什么 | 机制 |
 | --- | --- | --- |
-| 提交请求 | 用户重复点击、网络重试造成多条提交 | Idempotency-Key 必填；(user_id, request_id) 唯一索引兜底；冲突时读取并返回原记录，同一个 key 忽略后续请求体差异。 |
+| 提交请求 | 用户重复点击、网络重试造成多条提交 | Idempotency-Key 必填；(user_id, idempotency_key) 唯一索引兜底；冲突时读取并返回原记录，同一个 key 忽略后续请求体差异。 |
 | 任务领取 | broker 重复投递、补偿重复入队造成重复判题 | claim 是 WHERE status='QUEUED' 的条件更新；行数为 0 的 Worker 直接结束。 |
 | 终态写入 | 旧 Worker 复活后覆盖新结果 | finalize 的条件是 status='RUNNING' AND attempts=:我领取时的值；行数为 0 则丢弃结果。 |
 | 排行榜计分 | 同一用户反复 AC 同一题而重复加分 | user_problem_stats 上 WHERE solved=0 的条件更新；受影响行数为 1 才算首次通过；榜单用 ZADD … GT 写入。 |
@@ -676,7 +680,7 @@ Worker 启动参数（初始建议）：celery -A app.tasks.celery_app worker -Q
 | 6 | 同一用户同时首次 AC 两道不同题 | 两个 ZADD … GT 可能乱序到达 | 较小的分数被忽略，较大的保留 |
 | 7 | Redis 重启且数据丢失（无持久化） | 队列消息丢失；缓存清空；榜单清空；限流计数清零 | QUEUED 被补偿；榜单重建；缓存回源；限流自然恢复 |
 | 8 | MySQL 短暂断开 | 连接池 pool_pre_ping 重连；Worker 把它当作 InfraError 重试；API 返回 503 | 有限次重试后恢复 |
-| 9 | 用户重复点击提交（同一个 Idempotency-Key） | (user_id, request_id) 唯一冲突，读取原记录 | 返回同一个 submission_id |
+| 9 | 用户重复点击提交（同一个 Idempotency-Key） | (user_id, idempotency_key) 唯一冲突，读取原记录 | 返回同一个 submission_id |
 | 10 | Docker daemon 不可用 | 容器创建失败 → InfraError → 退避重试 | attempts 用尽后 FAILED（INFRA_ERROR） |
 
 ## 9. 数据库设计
@@ -685,13 +689,13 @@ v1.1 变更｜新增 tags / problem_tags / user_problem_stats；submissions 增�
 
 ### 9.1 总览与约定
 
-![原始图4](figures/reference/er-v1.1.png)
+[图4 Mermaid 单一来源](figures/er.md)（[v1.1 原图存档](figures/reference/er-v1.1.png)）
 
 图 4  核心表关系（ER 图）
 
 | 约定 | 取值 | 原因 |
 | --- | --- | --- |
-| 主键 | BIGINT UNSIGNED AUTO_INCREMENT | 统一；接口返回数字（2.4 决策 8）。 |
+| 主键 | BIGINT UNSIGNED AUTO_INCREMENT | 统一；项目 ID 远小于 2^53，接口返回数字（2.4 决策 8）。 |
 | 字符集 | utf8mb4，InnoDB | 支持中文与 emoji。 |
 | 时间 | DATETIME(3)，存 UTC，展示时转换 | 毫秒精度便于计算排队与判题耗时。 |
 | 枚举 | 用 VARCHAR + 应用层枚举，不用 MySQL ENUM | 状态值可读，便于迁移，也便于 NL2SQL 理解（9.7）。 |
@@ -763,6 +767,8 @@ CREATE TABLE submissions (
   problem_id       BIGINT UNSIGNED NOT NULL,
   language         VARCHAR(16)  NOT NULL,                 -- python / cpp
   code             TEXT         NOT NULL,                 -- ≤ 32 KB（应用层 + Nginx 限制）
+  time_limit_ms_snapshot   INT UNSIGNED NOT NULL,         -- 本次判题使用的时间限制快照
+  memory_limit_mb_snapshot INT UNSIGNED NOT NULL,         -- 本次判题使用的内存限制快照
   status           VARCHAR(20)  NOT NULL DEFAULT 'QUEUED',
   error_code       VARCHAR(32)  NULL,                     -- 仅 FAILED 使用
   error_message    VARCHAR(2048) NULL,                    -- 编译输出等，已截断
@@ -774,12 +780,13 @@ CREATE TABLE submissions (
   enqueue_count    TINYINT UNSIGNED NOT NULL DEFAULT 1,   -- 补偿入队次数
   worker_id        VARCHAR(64)  NULL,
   lease_expires_at DATETIME(3)  NULL,
-  request_id       VARCHAR(64)  NOT NULL,                 -- 客户端 Idempotency-Key
+  request_id       VARCHAR(64)  NOT NULL,                 -- API 请求追踪 ID，仅用于日志链路
+  idempotency_key  VARCHAR(64)  NOT NULL,                 -- 客户端 Idempotency-Key，与追踪 ID 分离
   queued_at        DATETIME(3)  NOT NULL,                 -- 最近一次入队时间
   started_at       DATETIME(3)  NULL,
   finished_at      DATETIME(3)  NULL,
   created_at       DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-  UNIQUE KEY uk_sub_user_request (user_id, request_id),
+  UNIQUE KEY uk_sub_user_idempotency (user_id, idempotency_key),
   KEY idx_sub_user_id (user_id, id),
   KEY idx_sub_user_problem_id (user_id, problem_id, id),
   KEY idx_sub_user_status (user_id, status),
@@ -846,7 +853,7 @@ CREATE TABLE user_problem_stats (
 | --- | --- | --- |
 | users(username) 唯一 | 登录、注册查重 | — |
 | problems(status, difficulty, id) | 题库分页：status='PUBLISHED' + 难度筛选 + 按 id 排序 | 题量不大，主要用于规范与面试说明，不作为优化重点。 |
-| submissions(user_id, request_id) 唯一 | 幂等兜底；重复提交时回读原记录 | 把“幂等”变成数据库约束，而不是约定。 |
+| submissions(user_id, idempotency_key) 唯一 | 幂等兜底；重复提交时回读原记录 | 把“幂等”变成数据库约束，而不是约定。 |
 | submissions(user_id, id) | 个人提交历史（游标分页，按 id 倒序） | id 自增，与时间同序；游标避免深翻页的大 OFFSET。 |
 | submissions(user_id, problem_id, id) | 个人历史按题目筛选 | — |
 | submissions(user_id, status) | 在途提交数：status IN ('QUEUED','RUNNING') | 在途集合极小，计数几乎是常数成本。 |
@@ -1006,7 +1013,7 @@ return {1, 0}
 
 v1.1 变更｜接口由 10 个补全到 30 个并按“公开 / 用户 / 管理员 / 运维”分组；管理接口统一 /api/v1/admin 前缀；新增统一错误体、分页约定、状态码语义；Idempotency-Key 必填；新增结果脱敏规则（I-08、I-09）。
 
-以下接口形成 MVP 的稳定边界；字段可在实现阶段根据 Pydantic 模型微调，但路径、权限、状态码语义与错误体格式视为约定，改动需同步更新本章。
+以下接口形成 MVP 的稳定边界。OpenAPI、代码与本设计不一致时先停止并报告，由用户确认后再同步变更；不能以“OpenAPI 为准”默改设计。
 
 ### 11.1 通用约定
 
@@ -1014,10 +1021,10 @@ v1.1 变更｜接口由 10 个补全到 30 个并按“公开 / 用户 / 管理�
 | --- | --- |
 | 路径与版本 | 统一前缀 /api/v1；JSON 请求与响应，UTF-8；Swagger/OpenAPI 在 /docs（生产环境可限制访问）。 |
 | 认证 | Authorization: Bearer &lt;JWT&gt;。匿名可读的接口在表格中标注“公开”。 |
-| ID | 数字（BIGINT）。访问控制靠归属校验：访问不属于自己的提交返回 404，避免被枚举。 |
+| ID | 数字（BIGINT）；本项目 ID 远小于 2^53。访问控制靠归属校验：访问不属于自己的提交返回 404，避免被枚举。 |
 | 时间 | ISO 8601，UTC，毫秒精度，如 2026-10-09T08:00:00.123Z。 |
 | 分页 | 题库、管理端列表用页码：page、size（size ≤ 50）；提交历史与后台提交列表用游标：cursor、limit，响应返回 next_cursor（无更多数据时为 null）。 |
-| 请求追踪 | 每个响应带 X-Request-ID；客户端可传入，服务端缺省则生成。 |
+| 请求追踪 | 每个响应带 X-Request-ID；客户端可传入，服务端缺省则生成。request_id 只用于请求追踪；Idempotency-Key 独立存为 idempotency_key，二者不混用。 |
 | 限流响应 | 429，带 Retry-After 秒数。 |
 
 #### 统一错误体与状态码
@@ -1052,6 +1059,8 @@ v1.1 变更｜接口由 10 个补全到 30 个并按“公开 / 用户 / 管理�
 | GET | /api/v1/auth/me | 当前用户信息（角色、状态） | 用户 |
 
 MVP 不提供服务端登出与 refresh：登出由前端丢弃 token 完成，access token 有效期短（12.2）。
+
+初始管理员通过一次性命令创建，不通过迁移预置密码；普通注册接口不接受管理员角色。创建命令的核心权限、哈希及事务逻辑由用户编写并验收（见 6.1、14.3）。
 
 ### 11.3 题库接口
 
@@ -1138,13 +1147,13 @@ code 字段只在详情接口中返回，且只给提交者与管理员；历史
 | 每个测试点的序号、结论、耗时 | 可见 | 可见 | 不可见 |
 | 样例测试点的输入 / 期望输出 / 实际输出（非 AC 时） | 可见 | 可见 | 不可见 |
 | 隐藏测试点的输入 / 期望输出 / 实际输出 | 不可见 | 仅测试数据管理接口可见 | 不可见 |
-| 运行时错误的 stderr（截断后） | 可见（含隐藏点，已截断到 2 KB） | 可见 | 不可见 |
+| 运行时错误的 stderr（截断后） | 仅样例点可见；隐藏点不可见 | 仅样例点可见；隐藏点不可见 | 不可见 |
 | 编译输出（截断后） | 可见 | 可见 | 不可见 |
 | 提交的源代码 | 可见 | 可见 | 不可见 |
 
 - 对外题目 DTO 只包含样例用例；缓存只存对外 DTO（10.2）。
 
-- 隐藏测试点的 stderr 只在“运行时错误”时返回，且截断；不返回 stdout，避免通过输出反推期望。
+- 隐藏测试点结果采用字段白名单，只回状态、耗时、内存，不回用户程序的 stdout/stderr。此规则覆盖提交者与管理员的判题结果接口，也覆盖汇总 error_message 等出口；测试数据管理接口的既有权限边界不变。样例点输出和编译输出可按既有上限截断后回传。
 
 - 日志里不打印测试数据与用户代码，只打印长度、哈希与 ID。
 
@@ -1153,6 +1162,9 @@ code 字段只在详情接口中返回，且只给提交者与管理员；历史
 ### 11.6 管理接口（/api/v1/admin）
 
 管理员接口统一放在 /api/v1/admin 下，由同一个依赖项做角色校验，所有写操作都会写入审计日志。
+
+
+测试点增删改及限制修改：题目存在 QUEUED/RUNNING 提交时拒绝，沿用 409 CONFLICT；提交接收与编辑操作须在事务协调下维持该约束，具体锁定方案由用户在 M1 确认。
 
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
@@ -1215,7 +1227,7 @@ v1.1 变更｜新增认证与会话细则、测试数据保护、输入与资源
 | 密码存储 | argon2id（或 bcrypt）加盐哈希；设置最小长度；绝不记录明文；哈希在线程池执行（4.4）。 |
 | JWT | HS256；解码时显式指定算法白名单；密钥来自环境变量、足够长；payload 只放 sub、iat、exp。 |
 | 有效期 | access token 短有效期（初始建议 30–60 分钟）；MVP 不做 refresh 与吊销黑名单（2.4 决策 7）。 |
-| 角色与状态 | token 只作身份标识；每个请求按 sub 读取用户的角色与状态（可加 ≤ 60 s 的短缓存），禁用账号、降权立即生效，不必等 token 过期。 |
+| 角色与状态 | token 只作身份标识；每次鉴权按 sub 对应的用户主键查询角色与账号状态，不缓存二者；禁用账号、降权立即生效，不必等 token 过期。未来缓存必须先有压测证据及新 ADR。 |
 | 登录防枚举 | 用户名不存在与密码错误返回同样的信息与相近的耗时；失败次数按 IP + 用户名限制（10.3）。 |
 | Token 存放 | access token 存浏览器 localStorage（实现简单），以 XSS 防护作为主要缓解；httpOnly Cookie + CSRF Token 方案列入 19.2 备选。 |
 | CORS | 生产环境前后端同源（经 Nginx），无需开放 CORS；开发环境用 Vite 代理，必要时使用白名单。 |
@@ -1225,6 +1237,8 @@ v1.1 变更｜新增认证与会话细则、测试数据保护、输入与资源
 - 隔离：期望输出只在 Worker 进程内与判题结果比对，永不写入工作目录、永不挂载进容器。
 
 - 序列化边界：对外 DTO 的字段白名单里没有隐藏用例；管理接口使用独立的 Schema；单元测试断言对外 DTO 序列化后不含隐藏用例。
+
+隐藏输出边界：隐藏点 stdout/stderr 不进入任何判题结果响应或日志；即使用户程序把输入写入 stderr 后异常退出，也只能返回该点状态、耗时、内存。样例与编译输出继续按既有截断规则处理。内部保存策略不在本次修订中扩展。
 
 - 缓存边界：Redis 缓存只存对外 DTO；测试数据不缓存。
 
@@ -1258,6 +1272,8 @@ v1.1 变更｜页面表增加注册页与路由守卫说明；新增 13.2 提交
 
 ### 13.1 页面
 
+截至 2026-12-15 简历 v1，只保证三组页面：① 登录；② 题库与题目详情（含 Monaco 提交）；③ 结果与历史。榜单页、管理端页面后置；管理员先通过 Swagger 操作。表中其他页面保留为后续目标，不改变后端接口的 P0/P1。
+
 | 页面 | 核心功能 |
 | --- | --- |
 | 登录 / 注册页 | 账号登录与注册、错误提示、Token 保存；登录失败被限流时给出明确提示。 |
@@ -1290,13 +1306,15 @@ v1.1 变更｜页面表增加注册页与路由守卫说明；新增 13.2 提交
 
 - Token：保存在 localStorage（12.2 的取舍），退出登录或收到 401 时清除。
 
-前端定位：　Vue3 + TypeScript 的目标是“够用即可”：能独立完成后台和数据可视化页面即可，不把大量时间消耗在复杂 UI 工程上。
+前端定位：Vue3 + TypeScript 先交付 13.1 约定的三组页面；榜单与管理界面后置，管理能力先用 Swagger 验收，不挤占 12 月压测和故障演练窗口。
 
 ## 14. 部署与运维
 
 v1.1 变更｜新增 beat 与迁移服务、网络分区与 docker.sock 挂载说明；新增迁移流程、可观测性规范、备份恢复、上线检查清单与内存预算（I-05、I-18、I-21）。
 
 ### 14.1 Compose 服务划分
+
+本节为目标部署结构。阶段06开发环境只用 Compose 启动 MySQL 与 Redis，API 在 WSL 本地运行；阶段06不做 API 容器化。Dockerfile.dev 与可信 Worker 环境探针位于阶段06末尾、限时半天，仅用于环境验收，不实现生产判题器。
 
 | 服务 | 作用 | 要点 |
 | --- | --- | --- |
@@ -1357,6 +1375,8 @@ LOG_LEVEL=INFO
 
 - 发布后冒烟：登录 → 提交一份已知答案 → 等待 ACCEPTED → 查看排行榜。
 
+首次部署在迁移完成后执行一次性管理员创建命令；密码通过环境变量或隐藏输入读取，不写入迁移、源码、命令行参数或日志。
+
 - 回滚：保留上一版镜像标签；涉及不可逆迁移的发布，先做数据库备份（14.5）。
 
 MVP 允许发布期间短暂停机，不追求零停机发布。
@@ -1367,7 +1387,7 @@ MVP 允许发布期间短暂停机，不追求零停机发布。
 
 - JSON 日志，固定字段：ts、level、service、request_id、user_id、submission_id、task_id、attempt、event、duration_ms。
 
-- X-Request-ID 中间件把 request_id 放入 contextvars；提交入队时把它放进任务参数，让 API 与 Worker 的日志可以串起来。
+- X-Request-ID 中间件把 request_id 放入 contextvars；提交入队时把它放进任务参数，让 API 与 Worker 的日志可以串起来。补偿投递可读取提交保存的追踪 ID；唯一幂等约束使用独立的 idempotency_key，不使用 request_id。
 
 - API 与 Worker 日志分开输出，均可按 submission_id 检索。
 
@@ -1433,6 +1453,8 @@ v1.1 变更｜新增判题与沙箱样例集、故障演练清单；压测方案
 
 ### 15.1 测试层级
 
+测试隔离：纯 API 测试可使用事务回滚 fixture；涉及 Worker、独立进程或并发的测试使用独立测试数据库，并在测试边界清表，不能仅依赖单连接的外层事务回滚。
+
 | 层级 | 测试内容 | 工具/手段 |
 | --- | --- | --- |
 | Unit | 状态转换（claim / finalize / 围栏）、比对器、Verdict 映射、幂等逻辑、score 编码、限流脚本 | Pytest；判题执行器用假的 DockerRunner |
@@ -1442,6 +1464,8 @@ v1.1 变更｜新增判题与沙箱样例集、故障演练清单；压测方案
 | E2E | 登录 → 提交 → 终态 → 排行榜 | 接口自动化脚本；演示时再做一次前端手动验证 |
 | Failure | Worker 中断、Redis 短断、重复投递、容器超时、榜单漂移 | 故障演练（15.2），记录到 docs/evidence/ |
 | Load | 提交入队、题目查询、排行榜查询、端到端判题 | Locust 或同类工具（15.3） |
+
+新增 v1.2 验收：禁用/降权下一次鉴权即生效；隐藏输入经 stderr 回显仍不外泄；在途编辑与并发提交约束成立；历史提交限制快照不变；追踪 ID 与幂等键独立。管理员创建命令不保存或输出明文密码。
 
 必须覆盖的几个“会出事”的测试：　① 同一用户并发 AC 同一题，只计一次分；② 用一个非管理员账号请求全部接口，响应与缓存里没有隐藏用例；③ 两个 Worker 同时 claim 同一提交，只有一个成功；④ 旧 Worker 的 finalize 被 attempts 围栏拒绝；⑤ 补偿扫描不会对已终态的提交重新入队。
 
@@ -1454,7 +1478,8 @@ v1.1 变更｜新增判题与沙箱样例集、故障演练清单；压测方案
 | 样例 | 用户代码的行为 | 期望结果 |
 | --- | --- | --- |
 | 正确解答 | 输出与期望一致 | ACCEPTED |
-| 行尾空白 / 末尾空行 | 每行多余空格、末尾多余空行 | ACCEPTED（比对器忽略） |
+| ASCII 行尾空白 / 末尾空行 | 每行多余 ASCII 空格/制表符/回车、CRLF 与末尾空行 | ACCEPTED（按 7.3.1 规整） |
+| Unicode 与非法编码边界 | NBSP、组合字符、非法 UTF-8 不得被扩大归一化 | 按 7.3.1 区分，预期 WRONG_ANSWER |
 | 错误答案 | 输出内容不同 | WRONG_ANSWER |
 | 编译错误（C++） | 语法错误 | COMPILE_ERROR，输出被截断 |
 | 运行时错误 | 除零、数组越界、未捕获异常 | RUNTIME_ERROR |
@@ -1534,82 +1559,115 @@ v1.1 变更｜新增判题与沙箱样例集、故障演练清单；压测方案
 
 ## 16. 项目目录结构
 
-v1.1 变更｜增加 docs/（ADR、证据、压测报告、面试问答）、.github/workflows、压测与造数脚本、tasks/ 与 judge/ 的内部拆分（I-22、I-24）。
+v1.2：沿用原分层骨架，补充协作目录、Mermaid 图源与私有原件位置。下面是目标结构，不代表这些文件已经实现。
 
 ```text
-oj-system/
+oj-platform/
+├─ AGENTS.md
+├─ .gitignore                   # 含 ~$*、*.docx、local-reference/、真实 .env 与凭据
+├─ .gitattributes
+├─ Makefile
+├─ README.md
+├─ .pre-commit-config.yaml
+├─ git-push-workflow/SKILL.md    # 新版 Git 规则，原样复制
+├─ local-reference/             # 私有 Word 原件与校验记录，不入库
 ├─ backend/
 │  ├─ app/
 │  │  ├─ main.py
-│  │  ├─ api/              # FastAPI 路由（v1/ 与 deps.py）
-│  │  ├─ core/             # 配置、安全、日志、错误、限流
-│  │  ├─ models/           # SQLAlchemy 模型
-│  │  ├─ schemas/          # Pydantic Schema（对外 / 管理端分开）
-│  │  ├─ services/         # 业务逻辑（含 judge_service：claim/finalize/lease）
-│  │  ├─ repositories/     # 数据访问
-│  │  ├─ tasks/            # celery_app.py、judge_task.py、maintenance.py
-│  │  └─ judge/            # runner.py、compiler.py、comparator.py、languages.py
-│  ├─ tests/               # unit/ api/ integration/ failure/ fixtures/
+│  │  ├─ api/                   # v1/、deps.py
+│  │  ├─ core/
+│  │  ├─ models/
+│  │  ├─ schemas/               # 对外 / 管理端分离
+│  │  ├─ services/
+│  │  ├─ repositories/
+│  │  ├─ tasks/
+│  │  └─ judge/
+│  ├─ tests/                    # unit/ api/ integration/ failure/ docker/ fixtures/
 │  ├─ alembic/
-│  └─ pyproject.toml
-├─ frontend/
-│  └─ src/                 # views/ components/ stores/ api/ router/
+│  ├─ pyproject.toml
+│  ├─ uv.lock
+│  ├─ .python-version
+│  └─ Dockerfile.dev            # 06末尾环境探针使用；06不做API容器化
+├─ frontend/src/
 ├─ deploy/
-│  ├─ docker-compose.yml
-│  ├─ docker-compose.dev.yml
+│  ├─ docker-compose.yml       # 后续目标部署
+│  ├─ docker-compose.dev.yml   # 06只起MySQL和Redis，API本地运行
 │  ├─ nginx.conf
 │  ├─ mysql/my.cnf
-│  └─ .env.example
+│  └─ .env.example             # 唯一环境模板；真实 deploy/.env 忽略
 ├─ judge-images/
-│  ├─ python/              # Dockerfile、入口脚本
-│  └─ cpp/
+│  ├─ python/
+│  └─ cpp/                     # 可砍的第二语言
 ├─ scripts/
-│  ├─ seed_data.py         # 造数（压测、EXPLAIN、NL2SQL 评测共用）
-│  ├─ loadtest/            # locustfile.py 与场景脚本
+│  ├─ create_admin.py          # M1一次性管理员命令；06不实现
+│  ├─ seed_data.py
+│  ├─ loadtest/
 │  ├─ backup.sh
 │  └─ rebuild_ranking.py
 ├─ docs/
-│  ├─ adr/                 # 决策记录（与第 20 章同步）
-│  ├─ evidence/            # 面试证据（见第 18 章索引）
-│  ├─ loadtest/            # 压测报告
-│  ├─ ER.png
-│  └─ interview-qa.md      # 模块复盘五问汇总
-├─ .github/workflows/ci.yml
-└─ README.md
+│  ├─ project-design.md        # 当前设计主本
+│  ├─ development-workflow.md  # 通用准备模板及OJ约束
+│  ├─ ai-workflow.md
+│  ├─ revisions/v1.2.md
+│  ├─ adr/                    # 沿用001—012，新决策从013开始
+│  ├─ figures/                # 每张图一份Mermaid Markdown图源
+│  │  └─ reference/            # v1.1 PNG仅作存档
+│  ├─ learning/
+│  ├─ modules/
+│  ├─ evidence/
+│  ├─ loadtest/
+│  └─ interview-qa.md
+└─ .github/workflows/ci.yml
 ```
 
-工程建议：　目录结构的核心目的是让“API、业务逻辑、任务、判题执行器”职责分离，便于测试与面试时解释设计取舍。judge/ 不依赖 Celery、不读写业务表，tasks/ 只做薄封装。
+工程约束：judge/ 不依赖 Celery、不读写业务表；tasks/ 只做薄封装。目录和规则文件、uv锁定、Ruff/pytest、/healthz与测试、数据库/Redis Compose、最小CI和README属于阶段06主线。
+
+阶段06末尾再安排 Dockerfile.dev 和 Worker 环境探针，限时半天；探针不通过不阻塞认证切片，必须记录结果和原因。阶段06 API 本地运行，不做API容器化。
+
+本轮仅交付设计与协作文档；工程目录、业务代码、迁移、CI配置的实际创建在用户确认进入阶段06后分节完成。
 
 ## 17. 开发里程碑与验收标准
 
-v1.1 变更｜里程碑落到日期，与规划02 的时间表对齐；压测与故障演练前移到 12 月；云上冒烟部署前移到 11 月下旬；补充近期周计划与延期时的砍刀顺序（I-20）。
+v1.2：按2026-10-19实际起点重排；M1顺延，M2及12月压测窗口保持。日期是目标，不代表验收已经通过。严格级理解与正确性门槛不能被时间表覆盖。
 
 ### 17.1 里程碑
 
 | 阶段 | 日期 | 目标 | 验收标准 |
 | --- | --- | --- | --- |
-| M1 需求与骨架 | 10/09 – 10/31 | ER 图、工程骨架、Alembic 首版（含 P0 数据模型）、JWT/RBAC、题库与测试数据管理、最小 CI | 核心接口可运行，Swagger 可访问；迁移可一键执行；CI 绿 |
-| M2 判题闭环 | 11/01 – 11/30 | judge 模块、Celery、状态机（claim/finalize/lease）、补偿扫描、重试、沙箱参数基线；11 月下旬云上冒烟部署 | 提交代码后得到稳定的最终 Verdict；样例集全绿；kill Worker 后提交仍能收敛；云上能跑通一次完整流程 |
-| M3 工程化 | 12/01 – 12/15 | 排行榜与缓存、限流、日志与健康检查、关键测试、正式部署；12/15 简历 v1 | Compose 一键拉起；关键路径有测试；README 可复现；12 月中旬可投递 |
-| M4 性能与稳定性 | 12/16 – 12/31 | 造数、EXPLAIN 对比、压测 S1–S5、故障演练、文档与证据整理 | 有真实压测报告与优化前后对比；故障演练记录齐全 |
-| 1 月（期末） | 2027/01 | 期末优先；只做 Bug 修复、文档与面试题库 | 无新功能；证据与问答持续补充 |
-| Freeze | 2027-01-10（建议） | 项目冻结 | 只修 Bug、补文档、准备面试，不再扩展核心范围 |
+| M1 需求与骨架 | 2026-10-19—11-08 | v1.2、工程初始化、数据库/迁移、认证/RBAC、题库与测试数据管理、初始管理员命令 | 严格级检查通过；核心API及迁移可验证；最小CI运行后通过 |
+| M2 判题闭环 | 2026-11-01—11-30 | Python执行器、Celery、状态机、恢复、重试、沙箱及云上冒烟 | 稳定终态、样例集、Worker故障恢复和云上流程验收 |
+| M3 工程化与简历v1 | 2026-12-01—12-15 | 榜单/缓存/限流/日志/健康检查、正式部署、三组前端页面、简历v1 | 真实运行及测试；管理员先用Swagger |
+| M4 性能与稳定性 | 2026-12-16—12-31 | 造数、EXPLAIN、压测S1—S5、故障与备份恢复演练、证据整理 | 真实报告及可复现记录，12月窗口不挪用 |
+| 期末与Freeze | 2027-01-01—01-10 | Bug修复、文档与面试证据；01-10冻结 | 不再增加功能 |
 
-根据原规划，核心版本最晚应在 2027 年 1 月前冻结。若延期，优先删除比赛、讨论、多语言（含 C++）等增强功能，不删除判题队列、Docker、Redis、测试与部署。日期可按课程与考试安排动态调整，但“压测与故障演练在 12 月完成”不让步。
+进度吃紧时优先砍比赛、讨论、C++等增强范围，不删除核心判题、可靠性、测试和部署验收；不得跳过严格级模块的理解与正确性检查。冻结日期为2027-01-10。
 
-### 17.2 近期周计划（10/09 – 11/30）
+### 17.2 重排执行表
 
-| 周 | 重点 | 产出 |
+| 日期 | 安排 | 验收重点 |
 | --- | --- | --- |
-| W1 10/09–10/16 | 定稿设计；确认 2.4 的 8 个决策；仓库与开发环境（Compose dev）；最小 CI | 仓库骨架、docs/adr/、CI 绿 |
-| W2 10/17–10/23 | Alembic 首版（P0 数据模型）；注册/登录/RBAC；统一错误体、日志与 request_id | 认证接口可用，迁移可执行 |
-| W3 10/24–10/31 | 题库与管理接口、测试数据（样例/隐藏）、标签；单元与 API 测试；前端登录与题库页 | M1 验收 |
-| W4 11/01–11/08 | judge/ 模块（DockerRunner、Comparator、Compiler）脱离 Celery 本地可跑；沙箱样例集雏形 | 本地能判一份 Python 代码 |
-| W5 11/09–11/15 | 提交接口 + Celery + claim/finalize + 状态机；端到端打通（Python） | 提交 → 终态闭环 |
-| W6 11/16–11/22 | lease、补偿扫描、重试；故障演练雏形；沙箱参数基线与样例集全绿；前端提交与结果页 | kill Worker 后能恢复 |
-| W7 11/23–11/30 | 云上冒烟部署；补齐 M2 缺口；开始榜单与缓存 | M2 验收 |
+| 10/19—10/20 | v1.2设计修订与独立提交 | 修订清单、图文/规则diff与校验记录 |
+| 10/21—10/23 | 阶段06主线 | 目录规则、uv锁定、Ruff/pytest、healthz、数据库/Redis、最小CI与README |
+| 阶段06末尾，限半天 | Dockerfile.dev与Worker环境探针 | 四步文件/权限验收；失败记录ADR-016和learning，认证切片可继续 |
+| 10/24—10/29 | 数据库、迁移、认证垂直切片 | 用户完成严格级核心，注册/登录/写库/测试贯通 |
+| 10/30—11/08 | M1收尾优先；仅允许独立的M2前置 | RBAC、题库、测试数据管理及管理员命令；前置仅比对器、判题镜像、DockerRunner本地脚本 |
+| 11/09—11/11 | W5专项复核（三天） | 逐条推演，用户复述并确认后再实现 |
+| 11/12—11/15 | Python主链路 | 提交→领取→执行→终态 |
+| 11/16—11/22 | lease、恢复、补偿、重试、沙箱专项 | 故障收敛、围栏及资源回收 |
+| 11/23—11/30 | 云上冒烟与补齐M2 | M2验收 |
+| 12/01—12/15 | M3与前端三组页面、简历v1 | 登录；题库/题目详情含Monaco；结果/历史；管理员用Swagger |
+| 12/16—12/31 | M4，窗口保持 | 压测、EXPLAIN、故障、备份恢复及证据 |
+| 2027/01/01—01/10 | 修复与冻结 | 无新功能，01/10冻结 |
 
-12 月的周计划在 M2 验收后根据实际进度再排；前端按后端接口并行推进（M1 登录/题库，M2 提交/结果，M3 排行榜/管理端）。
+交叠规则：10/30—11/08一律M1优先；M2前置只做不依赖M1的比对器、判题镜像和DockerRunner本地脚本，不抢跑待专项复核的设计变更。截至11/08若M1未验收，暂停M2前置并报告进度风险。
+
+### 17.3 本次不修改的专项设计
+
+2026-11-09—11-11复核：幂等重放顺序；lease/续租/接管/围栏；重试门槛与恢复上界；沙箱挂载及目录隔离；榜单重建与并发。先按现有设计推演，由用户复述后定稿。本次只同步追踪/幂等字段命名及已确认需求，不调整这些流程语义。
+
+Mermaid重绘限时半天，只修已确认的不一致；未完成不阻塞阶段06，完成状态如实记录。
+
+截至12/15只保证13.1的三组页面；榜单页与管理端页面后置，管理员先通过Swagger。其他前端页面不挤占12月压测与故障演练窗口。
 
 ## 18. 面试证据链
 
@@ -1710,7 +1768,7 @@ v1.1 变更｜新增 19.2 后置优化清单（每项写明触发条件）与 19
 | 2 | 能否在项目里产生真实价值（解决一个真实存在的问题）？ | 是 / 否 |
 | 3 | 能否在面试中讲清楚（原理、取舍、替代方案）？ | 是 / 否 |
 
-最终停止线：　2027 年 1 月前完成核心版本冻结（建议 2027-01-10）：后续仅修 Bug、补文档、做面试证据和必要优化，不再进行大范围功能扩张。
+最终停止线：2027-01-10 冻结核心版本；2026 年 12 月完成压测与故障演练。进度不足只砍范围，不跳过严格级模块的理解和正确性检查；冻结后仅修 Bug、补文档与整理面试证据。
 
 ## 20. 附录：关键决策记录
 
@@ -1730,12 +1788,21 @@ v1.1 变更｜新增 ADR-007 ～ ADR-012，并在 docs/adr/ 中同步维护（I-
 | ADR-010 | 计分粒度为（用户，题目），以 user_problem_stats 为准 | 排行榜含义是“通过了多少道不同的题”；首次 AC 由条件更新判定；榜单可重建，写入用 ZADD … GT。 | 已采纳 |
 | ADR-011 | 每个测试点一个一次性容器 | 隔离最干净、实现最直观、期望输出不进容器；启动开销以 M4 实测评估，必要时再考虑“每提交一个容器”。 | 已采纳（待实测） |
 | ADR-012 | Redis 单实例 noeviction，db0 broker / db1 其余 | 队列键不能被淘汰；缓存键必带 TTL 且总量可控；实测互相影响再拆实例。 | 已采纳 |
+| ADR-013 | MVP鉴权按主键查库，不缓存角色/状态 | 保证禁用、降权立即生效；未来缓存需压测和新ADR | 已采纳 |
+| ADR-014 | 隐藏点不回传用户stdout/stderr | 用户可把输入写进stderr，截断不能阻止泄露 | 已采纳 |
+| ADR-015 | 在途禁止修改测试点/限制，提交保留限制快照 | 保持一次提交使用的条件稳定；具体事务由M1严格级设计确认 | 需求已采纳，事务方案待确认 |
+| ADR-016 | WSL2 Linux文件系统开发，原生Engine优先评估 | 以真实文件/权限链路验收；06末尾探针半天且不阻塞认证 | 环境选择已采纳，Engine/探针待验收 |
 
 ## 附录 A：MVP 开发验收清单
 
+- [ ] 一次性管理员命令可用，密码不进入迁移、源码、参数或日志
+- [ ] 在途编辑与提交并发约束验收；限制快照保持稳定
+- [ ] request_id与idempotency_key职责分离；隐藏点stdout/stderr响应为白名单
+- [ ] Worker/并发测试使用独立测试库并清表
+
 #### 认证与题库
 
-- [ ] JWT 登录、注册、RBAC 可用；禁用账号立即生效
+- [ ] JWT 登录、注册、RBAC 可用；角色与状态不缓存，禁用/降权立即生效
 
 - [ ] 题库分页、题目详情、管理员 CRUD 与发布/下线可用
 
@@ -1816,7 +1883,11 @@ v1.1 变更｜新增 ADR-007 ～ ADR-012，并在 docs/adr/ 中同步维护（I-
 | FR-11 测试数据保护 | 11.3、11.4、11.5 | test_cases | 非管理员全接口断言；缓存检查 |
 | FR-12 运维可见 | 11.6 stats/queue；11.7 | submissions | 健康检查与日志链路检查 |
 
-## 附录 C：v1.0 → v1.1 变更摘要
+## 附录 C：版本变更摘要
+
+### C.1 v1.0 → v1.1 变更摘要
+
+以下历史摘要保留原编号；v1.2修订见C.2。
 
 编号对应《OJ 设计文档改进点分析》；“章节”指本文档中的位置。
 
@@ -1854,3 +1925,25 @@ v1.1 变更｜新增 ADR-007 ～ ADR-012，并在 docs/adr/ 中同步维护（I-
 | D-04 | 技术准入三问；需求追踪矩阵 | 19.3、附录 B |
 
 说明：　涉及 Docker、Celery、Redis、阿里云的参数与规则，均基于通用实践写成“初始建议”，代码片段为示意而非最终实现；上线前请以官方文档和你自己的实测为准。
+
+### C.2 v1.1 → v1.2 变更摘要
+
+修订日期：2026-10-19。R01—R13已由用户批准，细节与差异记录见 [revisions/v1.2.md](revisions/v1.2.md)。
+
+| 编号 | 本次决定 | 主要章节 |
+| --- | --- | --- |
+| R01 | 当前版本v1.2，Markdown维护主本，保留历史变更 | 封面、附录C |
+| R02 | OJ范围依P0/P1；OpenAPI不一致先停下确认 | 1、2、11、19 |
+| R03 | 冻结2027-01-10、严格级不跳过；M1顺延，W5复核11/09—11/11，主链路11/12—11/15；前端三组页面 | 2.4、13、17、19 |
+| R04 | 鉴权按主键查库，MVP不缓存角色/状态 | 6.1、12.2、15、附录A |
+| R05 | 隐藏点不回传stdout/stderr；样例和编译输出可截断回传 | 11.5、12.3、15 |
+| R06 | 在途禁止改测试点/限制；保存限制快照；事务方案由用户在M1确认 | 5、6.2、9、11.6、15 |
+| R07 | 一次性命令创建管理员，密码不进迁移/源码 | 6.1、11.2、12、14、16 |
+| R08 | request_id只追踪；独立idempotency_key与唯一约束 | 5、8.1（仅名称）、9、11、14 |
+| R09 | 纯API可回滚；Worker/并发用独立库并清表 | 15 |
+| R10 | BIGINT自增，ID远小于2^53，接口继续数字 | 2.4、9.1、11.1 |
+| R11 | 四张原图存档、Mermaid单一来源；限半天，只修已确认图文差异 | 4、5、9、16 |
+| R12 | 明确ASCII空白、CRLF和Unicode/非法编码比较规则 | 7.3.1、15.2 |
+| R13 | 补协作目录和ADR-013起的新记录；WSL2开发，06只起数据库/Redis、API本地运行 | 4.3、14、16、20 |
+
+五类专项设计保留至W5复核，不因本次版本升级提前变更。阶段06须在本次独立文档提交汇报、用户确认后启动。

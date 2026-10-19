@@ -2,6 +2,8 @@
 
 开发前准备方案（修订版）
 
+> OJ执行约定（2026-10-19）：本文件是通用协作模板。OJ做什么以 [project-design.md](project-design.md) 的P0/P1为准；具体协作以 [ai-workflow.md](ai-workflow.md) 为准。原模板的功能分级不改变OJ范围；OpenAPI与设计不一致先停止并报告。目录沿用设计第16章，ADR沿用001—012，新决策从013起。阶段06只用Compose启动MySQL和Redis，API在WSL本地运行。
+
 基于原版十二部分准备方案修订  ·  2026-10-13
 
 保留的核心原则：能独立解释、修改、验证和排查，才算理解；不为简历编造未实现的功能、性能数据或技术难点；AI 是导师、助手和审查者，不是绝对正确的答案来源。本版在此基础上补齐缺口、调整顺序、加入时间控制。
@@ -22,7 +24,7 @@
 | 8 | 没有时间估计 | 增加各阶段时间占比上限，功能分必做、应做、可选 | 避免在设计阶段停留过久，或不断加新技术 |
 | 9 | 「完全懂了才进入下一节」一刀切 | 按模块分级严格度，增加「待补理解清单」 | 全部卡死会拖垮进度，配置类内容不必同等严格 |
 | 10 | 文件名中英文混用 | 文件名统一用英文，内容用中文 | 避免路径乱码和链接失效 |
-| 11 | API 文档容易出现两份 | 设计期写 Markdown，开发后以 OpenAPI 为准 | 保证接口文档与代码一致 |
+| 11 | API 文档容易出现两份 | 设计期写 Markdown，开发后用 OpenAPI 核对已批准设计；不一致先停下确认 | 保证接口文档与代码一致 |
 | 12 | Git skill 只有设想 | 落成独立 skill 文件，明确推送流程（第 8 节） | 操作方便、提交精准、变化清晰 |
 | 13 | AI 使用没有记录 | 学习记录中增加 AI 使用记录 | 面试被追问时能快速回忆哪些是自己写的 |
 
@@ -72,7 +74,7 @@
 | 03 | docs/03-architecture.md | 分层、模块划分、依赖方向、部署结构、架构图 | 检查模块之间有没有循环依赖 |
 | 04 | docs/04-business-flows.md | 核心流程时序图、状态流转图（Mermaid） | 从原第 6 项提前 |
 | 05 | docs/05-database.md | 表结构、约束、索引、典型查询，ER 图（Mermaid） | 合并了原来的数据库设计和 ER 图 |
-| 06 | docs/06-api.md | 资源与路径、请求响应、错误格式、鉴权、幂等性 | 开发后以 FastAPI 生成的 OpenAPI 为准 |
+| 06 | docs/06-api.md | 资源与路径、请求响应、错误格式、鉴权、幂等性 | 开发后用 FastAPI OpenAPI 核对设计，不一致先停下确认 |
 | 07 | docs/07-design-review.md | 设计审查记录：问题、影响、处理、状态 | 见第 3 节 |
 
 关于流程：原版写的是「设计完成 → 设计审查 → 修正 → 确认第一阶段方案 → 开发」。修订后在设计初稿完成与设计审查之间插入「工程初始化」和「垂直切片验证」（见第 12 节），让审查建立在真实运行过的基础上。
@@ -138,21 +140,10 @@
 
 数据库具体选哪一种，以 docs/02-tech-stack.md 的选型结论为准。
 
-### 4.3  建议的目录结构
+### 4.3 OJ目录约定
 
-```text
-project/
-├── app/                  # 业务代码
-├── tests/                # 测试
-├── migrations/           # Alembic 迁移
-├── docs/                 # 设计、模块、学习、决策文档
-├── .env.example
-├── .gitignore
-├── pyproject.toml
-├── docker-compose.yml
-├── Makefile
-└── README.md
-```
+OJ工程位于WSL2 Linux文件系统，示例为~/projects/oj-platform；不在/mnt/d下开发。Windows D盘只保留文档备份。
+工程结构以 [设计第16章](project-design.md) 为准，避免维护第二份工程树。三份Word位于私有local-reference/且不入库；求职规划的内容不转成公开Markdown。
 
 ## 5  AI + 手动开发模式
 
@@ -307,7 +298,7 @@ project/
 | --- | --- | --- |
 | 单元测试 | 验证独立函数或业务逻辑 | pytest，不依赖数据库和网络 |
 | 接口测试 | 验证请求参数、响应和错误处理 | TestClient 或 httpx，覆盖正常、缺参、格式错误、未授权 |
-| 集成测试 | 验证数据库与多个模块协作 | 使用真实测试数据库，每个测试用事务回滚的 fixture 隔离数据 |
+| 集成测试 | 验证数据库与多个模块协作 | 纯API测试可用事务回滚fixture；涉及Worker、独立进程或并发时使用独立测试库并清表 |
 | 权限测试 | 验证不同用户能否执行对应操作 | 用参数化列出「角色 × 操作 × 预期结果」的矩阵 |
 | 回归测试 | 确保修复问题后原有功能正常 | 每修复一个 bug，就留下一个能复现它的测试 |
 
@@ -446,29 +437,11 @@ feat(auth): 新增用户注册接口
 
 不要把所有解释都堆进源代码，否则项目会变得臃肿。
 
-### 9.2  docs 目录
+### 9.2 docs目录
 
-```text
-docs/
-├── 00-project-brief.md        01-requirements.md      02-tech-stack.md
-├── 03-architecture.md         04-business-flows.md    05-database.md
-├── 06-api.md                  07-design-review.md
-├── learning/
-│   ├── 01-environment-setup.md
-│   ├── 02-project-structure.md
-│   ├── 03-database-connection.md
-│   └── open-questions.md
-├── modules/
-│   ├── authentication.md
-│   └── user-management.md
-├── decisions/
-│   ├── ADR-001-tech-stack.md
-│   └── ADR-002-database-design.md
-├── ai-workflow.md
-├── troubleshooting.md
-├── testing-strategy.md
-└── deployment-guide.md
-```
+以 [设计第16章](project-design.md) 为骨架：project-design.md、development-workflow.md、ai-workflow.md、adr/、figures/、learning/、modules/、evidence/、loadtest/、interview-qa.md。
+ADR统一放adr/，沿用设计文档001—012的编号和含义，新决策从013起。figures/每张图只有一份Mermaid Markdown源；reference/中的PNG仅作为v1.1原图存档。
+00—07设计文件是通用模板中的组织示例；OJ已经有统一设计主本，不再复制出八份并行设计。
 
 ### 9.3  约定
 
@@ -476,7 +449,7 @@ docs/
 
 - ADR（架构决策记录）只记会影响后续开发的重要决策，例如为什么选这个数据库、为什么用这种认证方式、为什么这样组织模块。不需要一开始写很多。
 
-- API 文档在设计阶段写 Markdown 表格，开发后以 FastAPI 自动生成的 OpenAPI 为准，避免两份不同步。
+- API 文档在设计阶段写 Markdown 表格，开发后用 FastAPI 自动生成的 OpenAPI 核对已批准设计；不一致先停下报告，由用户确认后同步。
 
 ## 10  面向求职：积累技术证据
 
@@ -546,7 +519,7 @@ docs/
 
 ## 12  最终执行流程（含时间控制）
 
-时间占比是各阶段的上限，按计划总工期折算。设计类阶段合计不超过 20%。到点就带着已知风险往前走，风险记入审查记录或 backlog，不要在设计阶段无限打磨。
+时间占比是各阶段的上限，按计划总工期折算。设计类阶段合计不超过 20%。时间上限不覆盖严格级模块的理解与正确性门槛；非核心已知风险记录到审查记录或backlog，进度不足优先削减范围。
 
 | 阶段 | 任务 | 主要交付物 | 验证方式 | 时间上限 |
 | --- | --- | --- | --- | --- |
