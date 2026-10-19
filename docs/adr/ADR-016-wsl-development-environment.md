@@ -1,6 +1,6 @@
 # ADR-016 WSL2开发与环境验收
 
-状态：WSL2与原生Engine可用；网络V1/V2已验证；容器直达宿主回环代理=不可达（预期），已结案；V3′直连验证待执行，Worker探针待验收。决定日期：2026-10-19。
+状态：WSL2与原生Engine可用；网络V1/V2已验证；容器直达宿主回环代理=不可达（预期），已结案；V3′直连验证已通过，当前环境 build 不需要代理；Worker探针待验收。决定日期：2026-10-19。
 
 工程位于WSL2 Linux文件系统，例如~/projects/oj-platform，不在/mnt/d下开发；Windows D盘仅留文档备份。三份Word原件私有保存，Git只维护项目Markdown。
 
@@ -31,17 +31,17 @@
 | V1 | WSL 经现有代理到 registry 返回 401；直连官方 PyPI/GitHub 正常；本地 curl 不经过代理 | 通过，均实测；本地 HTTP 服务已停止且监听释放 |
 | V2 | daemon 有效代理和 NO_PROXY 配置一致，hello-world 成功运行并清理 | 通过，hello-world 输出确认信息，退出码 0 |
 | V3 | 容器直达宿主回环代理 | 容器直达宿主回环代理=不可达（预期）；已结案，不记作环境故障，测试容器已清理 |
-| V3′ | 一次性普通容器不带代理变量，直连 https://pypi.org 与 http://archive.ubuntu.com | 待执行；记录状态码、耗时、失败方式并清理 |
+| V3′ | 一次性普通容器不带代理变量，直连 https://pypi.org 与 http://archive.ubuntu.com | 通过：分别200 / 6.308秒、200 / 0.793秒，无失败；容器已清理 |
 
 原 V3 已按用户决定结案：不改代理监听范围、不改 host 网络、不改任何既有网络配置。V3′不通过时，仅清理并记录到本 ADR 和 learning，再停止等待用户。06.3 独立开始，不以 V3′完成为前提。网络测试不替代 06.5 的 Worker 文件挂载与清理验收。
 
-## 待定：镜像 build 阶段代理（本轮不配置）
+## 当前环境结论：build 不需要代理
 
-- daemon 拉取镜像的代理、build 执行步骤的代理、容器运行时代理是不同作用域。V3 即使通过，也不能直接宣称 build 的网络已经通过。
-- 仅在客户端 shell export HTTP_PROXY/HTTPS_PROXY，不会独立触发 build arg 自动注入；需显式传入 --build-arg HTTP_PROXY / HTTPS_PROXY 等，从 shell 取值或直接赋值。客户端 config.json 的 proxies 也可自动提供 build args，但本项目当前不采用、不写入该配置。
-- 容器/构建步骤的代理地址计划使用 host.docker.internal；不能复制 daemon 的 loopback 地址。原生 Linux Engine 需明确映射该名称到 host-gateway，并验证该路径确实能连接现有代理。地址是否可达必须实测，不能仅比较字符串。
-- 不把代理写成 Dockerfile ENV，不在镜像或公开日志中保存实际代理端点。显式 build arg 方式、所用 builder 的名称映射、NO_PROXY 及连通性均待独立确认，在首次实际镜像构建前解决，不能等到 06.5 才首次排查。
-- 本轮没有执行 docker build，没有配置 build 代理。
+V3′中普通 bridge 容器没有 HTTP_PROXY、HTTPS_PROXY 或其他代理环境变量，直连官方 PyPI 和 Ubuntu archive 均返回200。按用户确认的判据，当前环境采用“build 不需要代理”，不配置 build 代理。该结论覆盖构建步骤的软件包下载，不覆盖 BuildKit 前端镜像（`docker/dockerfile:1`）与基础镜像拉取；daemon 拉取镜像仍保留已验证的服务级代理配置，两者作用域不同。
+
+证据边界：本轮实际测试是容器直连，没有执行 docker build；首次真实构建仍需验证，不把本次结果写成已完成镜像构建。若以后网络发生变化，再单独评估，不自动加入代理。
+
+补充事实：仅在 shell export 代理变量不会独立触发构建参数注入；需要显式 --build-arg 或客户端 proxies 配置才会提供相应构建参数。本项目未写入客户端 proxies，也不通过 Dockerfile ENV 保存代理。原 V3 的回环代理不可达已按预期边界结案，无需为此修改网络。
 
 依据：[Docker build proxy arguments](https://docs.docker.com/build/building/variables/#proxy-arguments)、[Docker client proxy](https://docs.docker.com/engine/cli/proxy/)、[Linux host-gateway](https://docs.docker.com/reference/cli/docker/container/run/#add-entries-to-container-hosts-file---add-host)。
 
@@ -51,4 +51,4 @@
 
 此前按旧验收口径暂停的事件已经结案；06.2 可独立提交，06.3 按用户批准的仅数据库/缓存方案推进。实际代理端点、宿主地址及原始诊断输出只留在私有 local-reference/。
 
-V3′通过后，按用户决定将当前环境的 build 结论更新为“build 不需要代理”；该结论依据容器直连实测，真实镜像构建仍需在首次构建时验证，不虚构已完成 build。V3′待执行期间不配置 build 代理。
+V3′实际通过，当前环境结论已更新为“build 不需要代理”；该结论依据容器直连实测，真实镜像构建仍需在首次构建时验证。未修改任何既有网络配置。
