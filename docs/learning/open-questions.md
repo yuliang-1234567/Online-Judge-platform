@@ -12,6 +12,6 @@
 | DOCX视觉渲染与Mermaid运行时预览 | 文档工具可用后记录，不伪称通过 |
 | 补齐 ADR-016 的 V3′ 证据与 build 超时边界（busybox 拉取 6.84 秒；容器直连 PyPI 200 但约 24.17 秒；普通容器直连不等同于 Dockerfile 构建验收） | 06.5 结束时补记，用户确认后再改 ADR |
 | [project-design.md](../project-design.md) §19.1 第1737行关于 AI 辅助使用/披露的表述 | 待项目负责人决定是否调整及具体措辞；本轮不改设计 |
-| 当前 PAT 含 workflow scope，可修改 .github/workflows/ | M1 验收后降权为 repo scope，或改用 SSH key 后撤销 |
+| 当前 PAT 含 workflow scope，可修改 .github/workflows/；明文存于本机 ~/.git-credentials（权限 600，仅本仓库生效） | M1 验收后降权为 repo scope，或改用 SSH key 后撤销 |
 
 严格级问题不能以时间到期为由跳过；通用问题按准备方案每周回看。
