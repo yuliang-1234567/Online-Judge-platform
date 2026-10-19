@@ -9,7 +9,7 @@ Python 后端求职项目，目标是实现题库、异步判题与结果查询�
 | 06.1 | 仓库规则、换行约定、环境变量模板 | 已完成 | b34da9e / c7738ce |
 | 06.2 | 后端骨架：uv、Ruff、pytest、/healthz | 已完成 | f71c890 / b52f128 |
 | 06.3 | MySQL 与 Redis 开发服务、Makefile | 已完成 | 4ecde79 |
-| 06.4 | pre-commit、最小 CI、README | 进行中 | 本次提交 |
+| 06.4 | pre-commit、最小 CI、README | 已完成 | f27c93e / 6099783 |
 | 06.5 | 判题环境探针（Docker 文件与权限链路） | 未开始 | 待 Docker 网络验收 |
 
 1. 日期依据是 [设计文档 §17.2「重排执行表」](docs/project-design.md#172-重排执行表)（第1645—1662行）；06.5 对应其中「阶段06末尾，限半天」那一行。
