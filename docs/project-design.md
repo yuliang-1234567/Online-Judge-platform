@@ -1569,7 +1569,7 @@ oj-platform/
 ├─ Makefile
 ├─ README.md
 ├─ .pre-commit-config.yaml
-├─ git-push-workflow/SKILL.md    # 新版 Git 规则，原样复制
+├─ .agents/skills/git-push-workflow/SKILL.md    # 新版 Git 规则，原样复制
 ├─ local-reference/             # 私有 Word 原件与校验记录，不入库
 ├─ backend/
 │  ├─ app/

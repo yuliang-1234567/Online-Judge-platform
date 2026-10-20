@@ -105,4 +105,4 @@ make probe
 - [设计与里程碑](docs/project-design.md)
 - [协作约定](docs/ai-workflow.md) 与 [仓库规则](AGENTS.md)
 - [学习记录](docs/learning/) 与 [验证记录](docs/evidence/06.4-local-checks.md)
-- [三层记录工作流](tech-doc-workflow/SKILL.md)
+- [三层记录工作流](.agents/skills/tech-doc-workflow/SKILL.md)

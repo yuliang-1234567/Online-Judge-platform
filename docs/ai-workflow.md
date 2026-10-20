@@ -1,6 +1,6 @@
 # OJ协作规则
 
-本文件依据2026-10-19用户确认的协作约定。设计主本为 [project-design.md](project-design.md)，Git规则为 [git-push-workflow/SKILL.md](../git-push-workflow/SKILL.md)。
+本文件依据2026-10-19用户确认的协作约定。设计主本为 [project-design.md](project-design.md)，Git规则为 [.agents/skills/git-push-workflow/SKILL.md](../.agents/skills/git-push-workflow/SKILL.md)。
 
 - 先讲解，再给方案；方案经用户确认后才编码，不一次提供整份代码。
 - 每个小节先对齐一句话目标和三条验收标准；完成后实际运行Ruff和pytest，如实记录命令、结果及未运行原因。

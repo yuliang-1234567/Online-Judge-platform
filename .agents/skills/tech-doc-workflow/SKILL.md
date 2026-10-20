@@ -216,6 +216,6 @@ AI 使用记录：AI 做了什么、我批准了什么、我还没看懂什么�
 - 功能记录与问题记录模板：同文件第 10.1、10.2 节。
 - 决策记录：`docs/adr/`，新决策从 ADR-013 起。
 - 协作与严格级要求：仓库根 `AGENTS.md`。
-- 提交与推送规则：`git-push-workflow/SKILL.md`。
+- 提交与推送规则：`.agents/skills/git-push-workflow/SKILL.md`。
 
 冲突时以设计主本和 `AGENTS.md` 为准。本文件只管“怎么写这三层记录”。

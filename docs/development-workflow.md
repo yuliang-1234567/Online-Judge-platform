@@ -368,7 +368,7 @@ git commit -m "feat(auth): 新增用户注册接口"
 
 ### 8.4  Git skill 的行为约定
 
-这部分已落成独立的 skill 文件 git-push-workflow/SKILL.md，核心约定如下：
+这部分已落成独立的 skill 文件 .agents/skills/git-push-workflow/SKILL.md，核心约定如下：
 
 | 场景 | 行为 |
 | --- | --- |
