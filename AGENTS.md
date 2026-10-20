@@ -21,6 +21,30 @@
 - 当前网络诊断只读；代理、DNS、镜像源的变更先给方案，由用户选择。不自行修改，不使用来源不明的镜像站。
 - 不要求用户在聊天中提供 sudo 密码、访问令牌或真实密钥。
 
+## 联网命令的代理取值
+
+- 不要从任何文档里抄代理端口，包括 `local-reference/` 下的诊断记录；那些是历史快照，不代表当前值。
+- 需要用代理时，按以下顺序取值：
+  1. 读取 Windows 系统代理设置。WSL 的 PATH 里没有 `powershell.exe`，必须使用绝对路径；将输出捕获到当前进程变量，不打印完整代理地址：
+
+     ```bash
+     P="$(/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile \
+       -Command "(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings').ProxyServer")"
+     P="${P%$'\r'}"
+     ```
+
+  2. 对本次命令真正要访问的域名探活，不统一使用 GitHub：
+
+     | 用途 | 探活命令 | HTTP 判据 |
+     | --- | --- | --- |
+     | git | `curl -sS -o /dev/null -w '%{http_code}\n' --proxy "http://$P" --max-time 10 https://github.com/` | `200` |
+     | uv / pip | `curl -sS -o /dev/null -w '%{http_code}\n' --proxy "http://$P" --max-time 10 https://pypi.org/pypi/fastapi/json` | `200`；小体积 JSON，避免索引页传输被超时截断造成误判 |
+     | docker | `curl -sS -o /dev/null -w '%{http_code}\n' --proxy "http://$P" --max-time 10 https://registry-1.docker.io/v2/` | `401`，认证入口正常响应即为可达 |
+
+  3. 探活必须在真正执行联网命令的同一次操作中完成，不提前测好后假设一直有效；直连是否可用也每次实测，不在文档里断言“必须走代理”。
+  4. 探活失败就停下报告；不要换端口重试，也不要从历史文档里找备选值。
+- 端口只在本机使用，不写进仓库任何文件；命令里也不要打印完整代理地址。
+
 ## 小节协作与理解
 
 - 先讲解，再写代码；方案确认后才动手，不一次提供整份代码。每个小节先给“一句话目标 + 三条验收标准”，等用户说开始；用户明确批准直接开始时，可按批准范围执行。
@@ -37,7 +61,7 @@
 - 06.3：仅 MySQL、Redis 的开发 Compose 与 Makefile（已完成，宿主端口 13306／16379）。
 - 06.4：pre-commit、最小 CI、README（已完成，见 README 进度表）。
 - 06.5：Worker 环境探针（已完成，见 README 进度表），限时半天；通过与否均记录 ADR-016 与 learning。API 在 WSL 本地运行，阶段 06 不做 API 容器化。
-- Node 暂不安装；首次推送后在 GitHub 验收 Mermaid 渲染，再把实际结果写入 evidence。
+- Node 暂不安装；首次推送已完成，四张 Mermaid 图已在 GitHub 文件页逐张截图确认渲染正常，验收结果见 [GitHub 验收记录](docs/evidence/github-verification.md)。
 
 ## Git 与公开仓库
 

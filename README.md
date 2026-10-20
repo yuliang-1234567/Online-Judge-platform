@@ -18,7 +18,7 @@ Python 后端求职项目，目标是实现题库、异步判题与结果查询�
 
 当前只实现 `GET /healthz`，返回 `200` 和 `{"status":"ok"}`；它只检查 API 进程存活，不检查 MySQL 或 Redis。其余业务接口、数据库迁移与判题流程均未实现；没有演示账号。MySQL/Redis 是本地开发依赖，API 在 WSL 本地运行。
 
-远端 Actions 未验证，待首次推送后确认；届时将运行结果补入 [验证记录](docs/evidence/06.4-local-checks.md)。当前工作流仅覆盖后端 Ruff 与已有 pytest 用例。
+本地 `main` 已推送；GitHub Actions 已运行 6 次，其中 5 次 `success`、1 次 `cancelled`、0 次 `failure`。那次 `cancelled` 是同一提交的重复触发被并发组取消（3 秒结束），不是失败；重复触发的成因未查明，记录在 [待确认清单](docs/learning/open-questions.md)。最近一次运行 [run 39426220951](https://github.com/yuliang-1234567/Online-Judge-platform/actions/runs/39426220951) 成功，耗时 11 秒，工作流 `Backend checks`。核验时远端文件树与本地已提交版本一致（tree SHA：`fd6985479133f550351ee7455c2f56cc3a34e963`），详见 [GitHub 验收记录](docs/evidence/github-verification.md)。当前工作流仅覆盖后端 Ruff 与已有 pytest 用例。
 
 ## 前置环境
 
