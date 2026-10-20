@@ -10,7 +10,7 @@ Python 后端求职项目，目标是实现题库、异步判题与结果查询�
 | 06.2 | 后端骨架：uv、Ruff、pytest、/healthz | 已完成 | f71c890 / b52f128 |
 | 06.3 | MySQL 与 Redis 开发服务、Makefile | 已完成 | 4ecde79 |
 | 06.4 | pre-commit、最小 CI、README | 已完成 | f27c93e / 6099783 |
-| 06.5 | 判题环境探针（Docker 文件与权限链路） | 未开始 | 待 Docker 网络验收 |
+| 06.5 | 判题环境探针（Docker 文件与权限链路） | 本地验收通过 | dd32e92 |
 
 1. 日期依据是 [设计文档 §17.2「重排执行表」](docs/project-design.md#172-重排执行表)（第1645—1662行）；06.5 对应其中「阶段06末尾，限半天」那一行。
 2. 06.x 是阶段06内部的施工编号，设计文档没有这一层编号。
@@ -52,7 +52,7 @@ make lint
 make run
 ```
 
-`make install` 按锁文件安装依赖；`make dev-up` 只启动 MySQL/Redis 并等待健康检查。`make dev-check` 应依次得到 `mysqld is alive`、查询结果 `1`、`PONG`。pytest 当前只有一个存活接口用例。
+`make install` 按锁文件安装依赖；`make dev-up` 只启动 MySQL/Redis 并等待健康检查。`make dev-check` 应依次得到 `mysqld is alive`、查询结果 `1`、`PONG`。默认 pytest 只收集并运行一个存活接口用例；Docker 探针通过下文的显式入口运行。
 
 `make run` 在前台启动 API，保留该终端；另开一个 WSL 终端执行：
 
@@ -75,6 +75,22 @@ uv run --locked ruff check .
 uv run --locked ruff format --check .
 uv run --locked pytest
 ```
+
+## Worker 环境探针（06.5）
+
+在 WSL 仓库根目录执行，前提是已同步后端依赖，本地已有官方 python:3.12-slim，普通用户可访问原生 Docker daemon：
+
+```bash
+uv run --project backend --locked --offline python backend/tools/worker_probe.py build
+make probe
+```
+
+构建只复制探针脚本，不安装依赖，不主动拉取镜像；缺少本地基础镜像会失败。make probe 复用已构建的镜像，底层显式传入 -o addopts="" -m docker。
+默认 pytest 的 Docker 目录在收集前被忽略；显式运行选中 success、failure、timeout 三个场景，缺 Docker 或探针镜像时应失败，不以 skip 代替验收。
+
+每个场景生成独立随机标记、两个一次性容器和临时目录；正常、退出 23、SIGKILL 退出 137 均验证文件内容、身份及清理。脚本保留实际退出码，pytest 仅在预期退出与清理断言全部成立时返回成功。
+容器统一使用当前 UID:GID、none 网络、禁止拉取、只读根文件系统与 /tmp tmpfs。验收清理容器和临时目录，探针镜像保留供重跑。
+本节限时半天，非预期失败时清理并记录后停止，不阻塞认证切片。实测证据和适用边界见 [06.5 记录](docs/learning/06.5-worker-probe.md) 与 [ADR-016](docs/adr/ADR-016-wsl-development-environment.md)。
 
 ## 排障
 
