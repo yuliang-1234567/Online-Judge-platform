@@ -49,6 +49,7 @@ dev-down:
 dev-ps:
 	$(COMPOSE) ps
 
+# $$ 是 make 的转义，最终交给容器内 shell 展开；写成单个 $ 会被 make 吃掉。
 dev-check:
 	$(COMPOSE) exec -T --user mysql mysql sh -ec 'MYSQL_PWD="$$MYSQL_PASSWORD" mysqladmin ping --host=127.0.0.1 --user="$$MYSQL_USER" --silent'
 	$(COMPOSE) exec -T --user mysql mysql sh -ec 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql --host=127.0.0.1 --user="$$MYSQL_USER" --database="$$MYSQL_DATABASE" --batch --skip-column-names --execute="SELECT 1"'

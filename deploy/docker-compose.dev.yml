@@ -13,6 +13,7 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
       - --innodb-buffer-pool-size=256M
+    # 只绑定回环地址：这两个服务只给本机开发用，不要暴露到局域网。
     ports:
       - "127.0.0.1:13306:3306"
     volumes:
@@ -33,6 +34,8 @@ services:
     user: redis
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in deploy/.env}
+    # ${...} 由 compose 解析时展开，$${...} 留给容器内 shell；
+    # 写成单个 $ 会让密码在这层就被替换成空值。
     command:
       - sh
       - -ec

@@ -23,6 +23,8 @@ select = ["E", "F", "I", "B", "UP"]
 testpaths = ["tests"]
 pythonpath = ["."]
 markers = ["docker: explicit local Docker environment probes"]
+# 默认排除 docker 标记：普通 pytest 不应依赖本地 Docker；
+# --strict-markers 让写错的标记直接报错，而不是被静默跳过。
 addopts = "-ra --strict-markers -m 'not docker'"
 
 [dependency-groups]
