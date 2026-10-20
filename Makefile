@@ -2,12 +2,13 @@ UV ?= uv
 COMPOSE := docker compose --env-file deploy/.env -f deploy/docker-compose.dev.yml
 
 .DEFAULT_GOAL := help
-.PHONY: help install run test lint fmt dev-config dev-up dev-down dev-ps dev-check
+.PHONY: help install run test lint fmt dev-config dev-up dev-down dev-ps dev-check probe
 
 help:
 	@echo "install     Sync locked backend dependencies"
 	@echo "run         Run the local API"
 	@echo "test        Run pytest"
+	@echo "probe       Run explicit Docker file/permission probes (build image first)"
 	@echo "lint        Check Ruff lint and formatting"
 	@echo "fmt         Format backend Python files"
 	@echo "dev-config  Validate Compose without printing secrets"
@@ -52,3 +53,6 @@ dev-check:
 	$(COMPOSE) exec -T --user mysql mysql sh -ec 'MYSQL_PWD="$$MYSQL_PASSWORD" mysqladmin ping --host=127.0.0.1 --user="$$MYSQL_USER" --silent'
 	$(COMPOSE) exec -T --user mysql mysql sh -ec 'MYSQL_PWD="$$MYSQL_PASSWORD" mysql --host=127.0.0.1 --user="$$MYSQL_USER" --database="$$MYSQL_DATABASE" --batch --skip-column-names --execute="SELECT 1"'
 	$(COMPOSE) exec -T --user redis redis sh -ec 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping'
+
+probe:
+	cd backend && $(UV) run --locked --offline pytest -o addopts="" -m docker -s -x

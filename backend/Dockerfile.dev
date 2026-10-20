@@ -1,0 +1,6 @@
+FROM python:3.12-slim
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+COPY tools/worker_probe.py /opt/worker_probe.py
+USER 65532:65532
+ENTRYPOINT ["python", "/opt/worker_probe.py"]
+CMD ["--help"]
