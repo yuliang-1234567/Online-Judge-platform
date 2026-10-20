@@ -35,14 +35,14 @@
 - 06.1：`.gitignore`、`.gitattributes`、`deploy/.env.example`、本文件及环境学习记录。该小节提交前不开始其他工程小节。
 - 06.2：backend 骨架、uv/锁文件、Ruff、pytest、`/healthz` 与测试；先给目标和验收，获准开始后先验证官方 PyPI 的索引与依赖下载可达。
 - 06.3：仅 MySQL、Redis 的开发 Compose 与 Makefile（已完成，宿主端口 13306／16379）。
-- 06.4：pre-commit、最小 CI、README。
-- 06.5：Worker 环境探针，限时半天；通过与否均记录 ADR-016 与 learning。API 在 WSL 本地运行，阶段 06 不做 API 容器化。
+- 06.4：pre-commit、最小 CI、README（已完成，见 README 进度表）。
+- 06.5：Worker 环境探针（已完成，见 README 进度表），限时半天；通过与否均记录 ADR-016 与 learning。API 在 WSL 本地运行，阶段 06 不做 API 容器化。
 - Node 暂不安装；首次推送后在 GitHub 验收 Mermaid 渲染，再把实际结果写入 evidence。
 
 ## Git 与公开仓库
 
 - 每个小节提交前先展示包含新文件的 diff 摘要和验证结果，等待用户确认后才提交；只按明确路径暂存，不用 `git add .`、`git add -A`、`git add -u`、任何 force 或 no-verify，不改写已推送历史。
 - 中文提交信息写入 UTF-8 临时文件，以 `git commit -F` 传入，不追加署名行。
-- 首次推送在 06.4 之后；先列全部将入库文件供用户审阅。每次推送都重新读取实际远程 URL 与分支并请用户确认位置；不把 skill 中的预期地址视作授权。当前没有添加远程或推送授权。
+- 首次推送在 06.4 之后；先列全部将入库文件供用户审阅。每次推送都重新读取实际远程 URL 与分支并请用户确认位置；不把 skill 中的预期地址视作授权。远程 origin 已添加；每次推送仍须按 skill 第二节单独确认位置。
 - Word 原件、求职规划、真实 `.env`、凭据、真实隐藏测试数据、数据库备份和判题产物不入库；`local-reference/` 只保留私有材料。测试用 fixtures 可入库。
 - 根目录与子目录只保留一份环境模板：`deploy/.env.example`。真实配置使用 `deploy/.env`，不得提交。
