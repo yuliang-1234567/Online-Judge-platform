@@ -2,7 +2,13 @@
 
 ## 阅读与依据
 
-- 开始工作前读本文件、`docs/ai-workflow.md` 及当前任务涉及的设计章节；涉及 Git 暂存、提交、推送或标签时，先读 `git-push-workflow/SKILL.md`。
+- 开始工作前读本文件、`docs/ai-workflow.md` 及当前任务涉及的设计章节。
+- **skill 触发条件（满足即读，读完必须按其执行）**：
+  | 触发动作 | 必读文件 |
+  |---|---|
+  | 任何 Git 暂存、提交、推送、标签操作 | `git-push-workflow/SKILL.md` |
+  | 在 `docs/` 下写或改文档、模块文档、学习笔记 | `tech-doc-workflow/SKILL.md` |
+- **规则优先级**：用户当前明确指令 > 本文件 > skill 文件 > 其他说明文档。冲突时停下报告，不自行取舍。
 - `docs/project-design.md` 是“做什么”的唯一依据；`docs/development-workflow.md` 是通用协作准备方案，`docs/ai-workflow.md` 记录 OJ 已确认的协作约定。
 - 当前用户明确指令优先于历史阶段说明。发现设计、代码或 OpenAPI 不一致，先停下报告，由用户决定，不默改设计或文档。
 - 工程命令在 WSL 的 Linux 文件系统和原生 Linux 进程中执行；不通过 Windows UNC 路径操作 WSL 工程，不在 `/mnt/d` 下开发。
@@ -28,9 +34,9 @@
 
 - 06.1：`.gitignore`、`.gitattributes`、`deploy/.env.example`、本文件及环境学习记录。该小节提交前不开始其他工程小节。
 - 06.2：backend 骨架、uv/锁文件、Ruff、pytest、`/healthz` 与测试；先给目标和验收，获准开始后先验证官方 PyPI 的索引与依赖下载可达。
-- 06.3：仅 MySQL、Redis 的开发 Compose 与 Makefile；等待 Docker 网络解决。
+- 06.3：仅 MySQL、Redis 的开发 Compose 与 Makefile（已完成，宿主端口 13306／16379）。
 - 06.4：pre-commit、最小 CI、README。
-- 06.5：Worker 环境探针，等待 Docker 网络解决，限时半天；通过与否均记录 ADR-016 与 learning。API 在 WSL 本地运行，阶段 06 不做 API 容器化。
+- 06.5：Worker 环境探针，限时半天；通过与否均记录 ADR-016 与 learning。API 在 WSL 本地运行，阶段 06 不做 API 容器化。
 - Node 暂不安装；首次推送后在 GitHub 验收 Mermaid 渲染，再把实际结果写入 evidence。
 
 ## Git 与公开仓库
