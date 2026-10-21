@@ -70,3 +70,13 @@
 - 首次推送在 06.4 之后；先列全部将入库文件供用户审阅。每次推送都重新读取实际远程 URL 与分支并请用户确认位置；不把 skill 中的预期地址视作授权。远程 origin 已添加；每次推送仍须按 skill 第二节单独确认位置。
 - Word 原件、求职规划、真实 `.env`、凭据、真实隐藏测试数据、数据库备份和判题产物不入库；`local-reference/` 只保留私有材料。测试用 fixtures 可入库。
 - 根目录与子目录只保留一份环境模板：`deploy/.env.example`。真实配置使用 `deploy/.env`，不得提交。
+
+## 工作区形态
+
+本项目可能以两种形态打开：WSL 内部路径，或 Windows 的 UNC 路径
+（\\wsl.localhost\Ubuntu\...）。无论哪种，执行规则相同：
+
+- 一切命令通过 wsl.exe -d Ubuntu --cd <项目绝对路径> --exec <命令> 执行
+- 禁止用 PowerShell 的 Set-Content / New-Item / Remove-Item 直接写项目目录，
+  属主、权限位、换行会被破坏
+- git 命令同样在 Linux 侧执行，不要在 Windows 侧对仓库运行 git
