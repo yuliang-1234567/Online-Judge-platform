@@ -11,14 +11,15 @@ Python 后端求职项目，目标是实现题库、异步判题与结果查询�
 | 06.3 | MySQL 与 Redis 开发服务、Makefile | 已完成 | 4ecde79 |
 | 06.4 | pre-commit、最小 CI、README | 已完成 | f27c93e / 6099783 |
 | 06.5 | 判题环境探针（Docker 文件与权限链路） | 本地验收通过 | dd32e92 |
+| 07.1 | 数据库表清单与 ER 对照核对（设计 §9，M1 前置） | 已完成 | 4e7df7f / b894d0b |
 
 1. 日期依据是 [设计文档 §17.2「重排执行表」](docs/project-design.md#172-重排执行表)（第1645—1662行）；06.5 对应其中「阶段06末尾，限半天」那一行。
-2. 06.x 是阶段06内部的施工编号，设计文档没有这一层编号。
+2. 06.x 是阶段06内部的施工编号，设计文档没有这一层编号。07.x 是阶段07内部的施工编号，设计文档同样没有这一层编号。
 3. 06.1—06.3 于 2026-10-19 完成，早于 §17.2 的计划窗口，原因是 Docker 网络问题未阻塞主线；如实记录，不为了对齐计划表而改日期。
 
 当前只实现 `GET /healthz`，返回 `200` 和 `{"status":"ok"}`；它只检查 API 进程存活，不检查 MySQL 或 Redis。其余业务接口、数据库迁移与判题流程均未实现；没有演示账号。MySQL/Redis 是本地开发依赖，API 在 WSL 本地运行。
 
-本地 `main` 已推送；GitHub Actions 已运行 6 次，其中 5 次 `success`、1 次 `cancelled`、0 次 `failure`。那次 `cancelled` 是同一提交的重复触发被并发组取消（3 秒结束），不是失败；重复触发的成因未查明，记录在 [待确认清单](docs/learning/open-questions.md)。最近一次运行 [run 39426220951](https://github.com/yuliang-1234567/Online-Judge-platform/actions/runs/39426220951) 成功，耗时 11 秒，工作流 `Backend checks`。核验时远端文件树与本地已提交版本一致（tree SHA：`fd6985479133f550351ee7455c2f56cc3a34e963`），详见 [GitHub 验收记录](docs/evidence/github-verification.md)。当前工作流仅覆盖后端 Ruff 与已有 pytest 用例。
+本地 `main` 已推送；截至提交 `e1b8148`，GitHub Actions 已运行 10 次，其中 9 次 `success`、1 次 `cancelled`、0 次 `failure`。那次 `cancelled` 是同一提交的重复触发被并发组取消（3 秒结束），不是失败；重复触发的成因未查明，记录在 [待确认清单](docs/learning/open-questions.md)。最近一次运行 [run 39551371745](https://github.com/yuliang-1234567/Online-Judge-platform/actions/runs/39551371745) 成功，耗时 11 秒，工作流 `Backend checks`。核验时远端文件树与本地已提交版本一致（tree SHA：`def530d39fd3828128324036f64c1c93adb88b73`），详见 [GitHub 验收记录](docs/evidence/github-verification.md)。当前工作流仅覆盖后端 Ruff 与已有 pytest 用例。
 
 ## 前置环境
 
@@ -104,5 +105,6 @@ make probe
 
 - [设计与里程碑](docs/project-design.md)
 - [协作约定](docs/ai-workflow.md) 与 [仓库规则](AGENTS.md)
-- [学习记录](docs/learning/) 与 [验证记录](docs/evidence/06.4-local-checks.md)
+- [学习记录](docs/learning/) 与 [验证记录](docs/evidence/06.4-local-checks.md)、[数据库表与 ER 核对](docs/evidence/db-schema-check.md)
 - [三层记录工作流](.agents/skills/tech-doc-workflow/SKILL.md)
+- [每轮风险拍板点规则](.agents/skills/risk-checkpoint/SKILL.md)
