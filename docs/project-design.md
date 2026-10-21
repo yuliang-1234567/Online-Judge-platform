@@ -843,7 +843,7 @@ first_ac_submission_id 可为 NULL；非空时，数据库外键仅保证所指 
 
 | 表 | 用途 | 关键字段与约束 |
 | --- | --- | --- |
-| tags | 题目标签 | id、name（唯一）。 |
+| tags | 题目标签 | id、name（唯一）、created_at（创建时间）。 |
 | problem_tags | 题目与标签多对多 | 联合主键 (problem_id, tag_id)；problem_id 物理外键指向 problems.id，ON DELETE RESTRICT、ON UPDATE RESTRICT；tag_id 物理外键指向 tags.id，ON DELETE RESTRICT、ON UPDATE RESTRICT；tag_id 上另建索引服务“按标签筛选”。 |
 | audit_logs | 管理审计日志 | id、user_id（NOT NULL，物理外键指向 users.id，ON DELETE RESTRICT，ON UPDATE RESTRICT）、action、resource_type、resource_id、payload_summary（摘要，不含完整数据）、request_id、ip、created_at；索引 (resource_type, resource_id, id) 与 (user_id, id)。 |
 
@@ -859,6 +859,51 @@ audit_logs 仅记录已登录管理员的操作；系统自动动作只写运行
 
 - M1 已接受限制：test_cases.updated_at 只记录最后修改时点，不能恢复旧输入或期望输出；测试数据版本化或快照留待后续评估，见 [待确认清单](learning/open-questions.md)。
 
+三张文字表的具体建表语句：
+
+```sql
+CREATE TABLE tags (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  name       VARCHAR(32)  NOT NULL,
+  created_at DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  UNIQUE KEY uk_tags_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+```sql
+CREATE TABLE problem_tags (
+  problem_id BIGINT UNSIGNED NOT NULL,
+  tag_id     BIGINT UNSIGNED NOT NULL,
+  PRIMARY KEY (problem_id, tag_id),
+  KEY idx_problem_tags_tag (tag_id),                        -- 外键复用该索引，不再自动创建重复索引
+  CONSTRAINT fk_problem_tags_problem FOREIGN KEY (problem_id) REFERENCES problems(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT fk_problem_tags_tag     FOREIGN KEY (tag_id)     REFERENCES tags(id)     ON DELETE RESTRICT ON UPDATE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+```sql
+CREATE TABLE audit_logs (
+  id              BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id         BIGINT UNSIGNED NOT NULL,
+  action          VARCHAR(32)   NOT NULL,                  -- 管理接口动作名
+  resource_type   VARCHAR(32)   NOT NULL,                  -- PROBLEM / TEST_CASE / TAG / USER
+  resource_id     BIGINT UNSIGNED NOT NULL,                -- 资源删除后仍保留 ID，仅用于追溯
+  payload_summary VARCHAR(2048) NULL,                      -- 最多 2048 字符；先生成摘要再截断
+  request_id      VARCHAR(64)   NOT NULL,
+  ip              VARCHAR(45)   NOT NULL,                  -- 应用层先规范化为统一文本形式
+  created_at      DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  KEY idx_audit_logs_resource (resource_type, resource_id, id),
+  KEY idx_audit_logs_user (user_id, id),
+  CONSTRAINT fk_audit_logs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT ON UPDATE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+- payload_summary 的上限是 2048 个字符，utf8mb4 下最坏约 8192 字节，属小表可接受；写入顺序必须是先生成不含完整业务数据的摘要、再限制到 2048 字符，不能把原始请求体直接截断当作摘要。
+
+- ip 入库前要规范化为统一文本形式，避免同一 IPv6 地址因写法不同落成不同值。
+
+- 字符集与排序规则以 deploy/docker-compose.dev.yml 第 13—14 行为准；那是开发 Compose 的声明，未在真实表结构上做过运行验证。
+
 ### 9.3 索引设计
 
 查询索引必须能指出所服务的查询；唯一约束用于保证数据完整性，主键另行标明，不计入六项非主键唯一约束。
@@ -870,7 +915,8 @@ audit_logs 仅记录已登录管理员的操作；系统自动动作只写运行
 | test_cases(problem_id, case_index) | — | 联合 UNIQUE | uk_cases_problem_idx |
 | submissions(user_id, idempotency_key) | 幂等兜底；重复提交时回读原记录 | 联合 UNIQUE | 把“幂等”变成数据库约束，而不是约定。 |
 | submission_cases(submission_id, case_index) | 一次提交的明细 | 联合 UNIQUE | 同时防止同一测试点重复写入。 |
-| tags(name) | — | UNIQUE | 原为文字唯一声明，随完整 DDL 确认。 |
+| tags(name) | — | UNIQUE | uk_tags_name；完整 DDL 见 §9.2.4。 |
+| problem_tags(tag_id) | 按标签筛题 | — | idx_problem_tags_tag；tag_id 外键复用该索引，不另建重复索引。 |
 | problems(status, difficulty, id) | 题库分页：status='PUBLISHED' + 难度筛选 + 按 id 排序 | — | 题量不大，主要用于规范与面试说明，不作为优化重点。 |
 | submissions(user_id, id) | 个人提交历史（游标分页，按 id 倒序） | — | id 自增，与时间同序；游标避免深翻页的大 OFFSET。 |
 | submissions(user_id, problem_id, id) | 个人历史按题目筛选 | — | — |
@@ -879,6 +925,8 @@ audit_logs 仅记录已登录管理员的操作；系统自动动作只写运行
 | submissions(status, lease_expires_at) | 恢复扫描：lease 已过期的 RUNNING | — | 在途集合极小，索引依然高效。 |
 | submissions(problem_id, status) | 管理端按题目与状态筛选、题目维度统计 | — | — |
 | user_problem_stats(user_id, problem_id) | 首次 AC 条件更新；用户通过题数统计 | 联合 PRIMARY KEY | 榜单重建全表扫描 solved=1，低频可接受。 |
+| audit_logs(resource_type, resource_id, id) | 按资源追溯操作记录（游标分页） | — | 前缀定位，按 id 排序。 |
+| audit_logs(user_id, id) | 按管理员查其操作记录（游标分页） | — | — |
 
 外键约束自动创建的索引（如 first_ac_submission_id）不计入本清单；本清单只列人为设计、服务特定查询的索引。
 
