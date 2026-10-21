@@ -8,6 +8,7 @@
   |---|---|
   | 任何 Git 暂存、提交、推送、标签操作 | `.agents/skills/git-push-workflow/SKILL.md` |
   | 在 `docs/` 下写或改文档、模块文档、学习笔记 | `.agents/skills/tech-doc-workflow/SKILL.md` |
+  | 每轮回复结束 | `.agents/skills/risk-checkpoint/SKILL.md` |
 - **规则优先级**：用户当前明确指令 > 本文件 > skill 文件 > 其他说明文档。冲突时停下报告，不自行取舍。
 - `docs/project-design.md` 是“做什么”的唯一依据；`docs/development-workflow.md` 是通用协作准备方案，`docs/ai-workflow.md` 记录 OJ 已确认的协作约定。
 - 当前用户明确指令优先于历史阶段说明。发现设计、代码或 OpenAPI 不一致，先停下报告，由用户决定，不默改设计或文档。
