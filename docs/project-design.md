@@ -687,6 +687,8 @@ Worker 启动参数（初始建议）：celery -A app.tasks.celery_app worker -Q
 
 v1.1 变更｜新增 tags / problem_tags / user_problem_stats；submissions 增加 attempts、lease、时间点、联合唯一幂等键；test_cases 区分样例与隐藏；统一类型约定；给出核心表 DDL、索引驱动查询、造数与 EXPLAIN 方案、分析只读视图（I-01、I-02、I-08、I-10、I-14、I-15、I-23）。
 
+本章定义九张表的表结构、约束、索引与数据保留口径；迁移的执行步骤、发布与回滚见 §14.3，迁移实现不在本章维护。结构以本章 DDL 为准，ER 图（`docs/figures/er.md`）只作速览。
+
 ### 9.1 总览与约定
 
 [图4 Mermaid 单一来源](figures/er.md)（[v1.1 原图存档](figures/reference/er-v1.1.png)）
