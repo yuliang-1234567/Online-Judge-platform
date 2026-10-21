@@ -1,6 +1,6 @@
 # 核心表关系
 
-Mermaid是本图唯一维护源；[v1.1原PNG](reference/er-v1.1.png)仅作存档。修正test_cases的input_size/output_size，与已批准的限制快照及追踪/幂等字段同步。只展示核心字段，完整结构以设计第9章为准。
+Mermaid是本图唯一维护源；[v1.1原PNG](reference/er-v1.1.png)仅作存档。修正test_cases的input_size/output_size，与已批准的限制快照及追踪/幂等字段同步。字段按设计第9章已确认定义同步，类型细节、可空性与约束以设计主本为准。
 
 ```mermaid
 erDiagram
@@ -15,21 +15,28 @@ erDiagram
     problems ||--o{ problem_tags : has
     tags ||--o{ problem_tags : labels
     users ||--o{ audit_logs : operates
+    submissions ||--o| user_problem_stats : first_ac_reference
     users {
         bigint id PK
         varchar username UK
         varchar password_hash
         varchar role
         varchar status
+        datetime created_at
+        datetime updated_at
     }
     problems {
         bigint id PK
         varchar slug UK
         varchar title
+        mediumtext description
+        varchar difficulty
         int time_limit_ms
         int memory_limit_mb
         varchar status
         bigint created_by FK
+        datetime created_at
+        datetime updated_at
     }
     test_cases {
         bigint id PK
@@ -41,6 +48,8 @@ erDiagram
         int input_size
         int output_size
         char sha256
+        datetime created_at
+        datetime updated_at
     }
     submissions {
         bigint id PK
@@ -51,12 +60,22 @@ erDiagram
         int time_limit_ms_snapshot
         int memory_limit_mb_snapshot
         varchar status
+        varchar error_code
+        varchar error_message
+        smallint passed_cases
+        smallint total_cases
+        int runtime_ms
+        int memory_kb
         tinyint attempts
         tinyint enqueue_count
         varchar worker_id
         datetime lease_expires_at
         varchar request_id
         varchar idempotency_key
+        datetime queued_at
+        datetime started_at
+        datetime finished_at
+        datetime created_at
     }
     submission_cases {
         bigint id PK
@@ -76,7 +95,8 @@ erDiagram
         int attempts
         tinyint solved
         datetime first_ac_at
-        bigint first_ac_submission_id
+        bigint first_ac_submission_id FK
+        datetime updated_at
     }
     tags {
         bigint id PK
@@ -101,4 +121,4 @@ erDiagram
 
 submissions的唯一幂等约束是(user_id, idempotency_key)，不是idempotency_key单列唯一。test_cases唯一约束是(problem_id, case_index)，submission_cases是(submission_id, case_index)。test_case_id在删除测试点后可空，用户/题目统计以联合主键计数。
 
-tags、audit_logs等未完整给出DDL的表仍需M1严格级设计核对；图中类型用于表达现有约定，不代替该确认。事务锁定方案本次未决定。
+图中类型细节、可空性、默认值与引用动作以设计第9章为准；三张文字表的完整 DDL 须经 M1 严格级确认。audit_logs.user_id 为非空管理员引用；first_ac_submission_id 可空，其同用户、同题目及 ACCEPTED 条件由应用层校验。事务锁定方案不在本次修改范围。

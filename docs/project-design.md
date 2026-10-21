@@ -691,17 +691,19 @@ v1.1 变更｜新增 tags / problem_tags / user_problem_stats；submissions 增�
 
 [图4 Mermaid 单一来源](figures/er.md)（[v1.1 原图存档](figures/reference/er-v1.1.png)）
 
-图 4  核心表关系（ER 图）
+图 4  核心表关系（ER 图；字段与本章已确认定义同步）
 
 | 约定 | 取值 | 原因 |
 | --- | --- | --- |
 | 主键 | BIGINT UNSIGNED AUTO_INCREMENT | 统一；项目 ID 远小于 2^53，接口返回数字（2.4 决策 8）。 |
 | 字符集 | utf8mb4，InnoDB | 支持中文与 emoji。 |
-| 时间 | DATETIME(3)，存 UTC，展示时转换 | 毫秒精度便于计算排队与判题耗时。 |
+| 时间 | DATETIME(3)，存 UTC；MySQL 服务器及所有写入连接会话统一采用 UTC，展示时转换。 | 毫秒精度便于计算排队与判题耗时。 |
 | 枚举 | 用 VARCHAR + 应用层枚举，不用 MySQL ENUM | 状态值可读，便于迁移，也便于 NL2SQL 理解（9.7）。 |
 | 外键 | 使用物理外键 | 演示规模下开销可忽略，换来完整性；数据量扩大 10 倍后，可在迁移中去掉 submissions 相关外键，改由应用层保证（面试可讲的取舍）。 |
 | 软删除 | 不做；题目用 status=OFFLINE 下线 | 已有提交需要保留其题目与结果。 |
-| 迁移 | Alembic，首版迁移就包含本章全部表 | 避免后续大改表。 |
+| 迁移 | Alembic；tags、problem_tags、audit_logs 的完整 DDL 在 M1 数据库严格级设计中，与六张已有 DDL 一并补齐并确认，然后再编写包含全部九张表的首版迁移。 | 避免后续大改表。 |
+
+被引用列恒为自增 id、永不更新；各外键仍须逐条显式声明 ON DELETE / ON UPDATE，本说明不替代约束子句。
 
 ### 9.2 表结构
 
@@ -735,7 +737,7 @@ CREATE TABLE problems (
   updated_at      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   UNIQUE KEY uk_problems_slug (slug),
   KEY idx_problems_status_difficulty_id (status, difficulty, id),
-  CONSTRAINT fk_problems_creator FOREIGN KEY (created_by) REFERENCES users(id)
+  CONSTRAINT fk_problems_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
@@ -753,8 +755,9 @@ CREATE TABLE test_cases (
   output_size     INT UNSIGNED NOT NULL,
   sha256          CHAR(64)     NOT NULL,                  -- 便于校验与去重
   created_at      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  updated_at      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   UNIQUE KEY uk_cases_problem_idx (problem_id, case_index),
-  CONSTRAINT fk_cases_problem FOREIGN KEY (problem_id) REFERENCES problems(id)
+  CONSTRAINT fk_cases_problem FOREIGN KEY (problem_id) REFERENCES problems(id) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
@@ -765,11 +768,11 @@ CREATE TABLE submissions (
   id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
   user_id          BIGINT UNSIGNED NOT NULL,
   problem_id       BIGINT UNSIGNED NOT NULL,
-  language         VARCHAR(16)  NOT NULL,                 -- python / cpp
+  language         VARCHAR(16)  NOT NULL,                 -- python
   code             TEXT         NOT NULL,                 -- ≤ 32 KB（应用层 + Nginx 限制）
   time_limit_ms_snapshot   INT UNSIGNED NOT NULL,         -- 本次判题使用的时间限制快照
   memory_limit_mb_snapshot INT UNSIGNED NOT NULL,         -- 本次判题使用的内存限制快照
-  status           VARCHAR(20)  NOT NULL DEFAULT 'QUEUED',
+  status           VARCHAR(20) NOT NULL DEFAULT 'QUEUED', -- 提交级状态，完整取值见 §5.3
   error_code       VARCHAR(32)  NULL,                     -- 仅 FAILED 使用
   error_message    VARCHAR(2048) NULL,                    -- 编译输出等，已截断
   passed_cases     SMALLINT UNSIGNED NOT NULL DEFAULT 0,
@@ -793,8 +796,8 @@ CREATE TABLE submissions (
   KEY idx_sub_status_queued (status, queued_at),
   KEY idx_sub_status_lease (status, lease_expires_at),
   KEY idx_sub_problem_status (problem_id, status),
-  CONSTRAINT fk_sub_user FOREIGN KEY (user_id) REFERENCES users(id),
-  CONSTRAINT fk_sub_problem FOREIGN KEY (problem_id) REFERENCES problems(id)
+  CONSTRAINT fk_sub_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT fk_sub_problem FOREIGN KEY (problem_id) REFERENCES problems(id) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
@@ -805,16 +808,18 @@ CREATE TABLE submission_cases (
   test_case_id   BIGINT UNSIGNED NULL,                    -- 测试点被删除后置空
   case_index     INT UNSIGNED NOT NULL,                   -- 快照
   is_sample      TINYINT(1)   NOT NULL,                   -- 快照
-  status         VARCHAR(20)  NOT NULL,                   -- AC / WA / TLE / ...
+  status         VARCHAR(20)  NOT NULL,                   -- ACCEPTED / WRONG_ANSWER / RUNTIME_ERROR / TIME_LIMIT / MEMORY_LIMIT / OUTPUT_LIMIT
   runtime_ms     INT UNSIGNED NULL,
   memory_kb      INT UNSIGNED NULL,
-  stdout_snippet VARCHAR(1024) NULL,                      -- 仅“非 AC 的样例点”保存
-  stderr_snippet VARCHAR(2048) NULL,                      -- 仅运行时错误保存，已截断
+  stdout_snippet VARCHAR(1024) NULL,                      -- 仅“非 ACCEPTED 的样例点”保存
+  stderr_snippet VARCHAR(2048) NULL,                      -- 仅 RUNTIME_ERROR 保存，已截断
   UNIQUE KEY uk_sc_sub_idx (submission_id, case_index),
-  CONSTRAINT fk_sc_sub  FOREIGN KEY (submission_id) REFERENCES submissions(id) ON DELETE CASCADE,
-  CONSTRAINT fk_sc_case FOREIGN KEY (test_case_id)  REFERENCES test_cases(id)  ON DELETE SET NULL
+  CONSTRAINT fk_sc_sub  FOREIGN KEY (submission_id) REFERENCES submissions(id) ON DELETE CASCADE ON UPDATE RESTRICT,
+  CONSTRAINT fk_sc_case FOREIGN KEY (test_case_id)  REFERENCES test_cases(id)  ON DELETE SET NULL ON UPDATE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
+
+首版 submissions.language 仅允许 python，提交校验拒绝 cpp 及其他不支持值，OpenAPI 语言枚举与之保持一致。submission_cases.status 仅保存逐测试点终态，不使用 QUEUED、RUNNING、FAILED 或 COMPILE_ERROR；编译失败仅在 submissions.status 记录 COMPILE_ERROR，不生成逐点明细。
 
 #### 9.2.4 user_problem_stats、tags、problem_tags、audit_logs
 
@@ -828,40 +833,54 @@ CREATE TABLE user_problem_stats (
   first_ac_submission_id BIGINT UNSIGNED NULL,
   updated_at             DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   PRIMARY KEY (user_id, problem_id),
-  CONSTRAINT fk_ups_user    FOREIGN KEY (user_id)    REFERENCES users(id),
-  CONSTRAINT fk_ups_problem FOREIGN KEY (problem_id) REFERENCES problems(id)
+  CONSTRAINT fk_ups_user    FOREIGN KEY (user_id)    REFERENCES users(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT fk_ups_problem FOREIGN KEY (problem_id) REFERENCES problems(id) ON DELETE RESTRICT ON UPDATE RESTRICT,
+  CONSTRAINT fk_ups_first_ac_submission FOREIGN KEY (first_ac_submission_id) REFERENCES submissions(id) ON DELETE RESTRICT ON UPDATE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
+
+first_ac_submission_id 可为 NULL；非空时，数据库外键仅保证所指 submissions 记录存在。应用层写入该引用时，必须分别校验同一 user_id、同一 problem_id，以及提交状态为 ACCEPTED。
 
 | 表 | 用途 | 关键字段与约束 |
 | --- | --- | --- |
 | tags | 题目标签 | id、name（唯一）。 |
-| problem_tags | 题目与标签多对多 | 联合主键 (problem_id, tag_id)，两个外键；tag_id 上另建索引服务“按标签筛选”。 |
-| audit_logs | 管理审计日志 | id、user_id、action、resource_type、resource_id、payload_summary（摘要，不含完整数据）、request_id、ip、created_at；索引 (resource_type, resource_id, id) 与 (user_id, id)。 |
+| problem_tags | 题目与标签多对多 | 联合主键 (problem_id, tag_id)；problem_id 物理外键指向 problems.id，ON DELETE RESTRICT、ON UPDATE RESTRICT；tag_id 物理外键指向 tags.id，ON DELETE RESTRICT、ON UPDATE RESTRICT；tag_id 上另建索引服务“按标签筛选”。 |
+| audit_logs | 管理审计日志 | id、user_id（NOT NULL，物理外键指向 users.id，ON DELETE RESTRICT，ON UPDATE RESTRICT）、action、resource_type、resource_id、payload_summary（摘要，不含完整数据）、request_id、ip、created_at；索引 (resource_type, resource_id, id) 与 (user_id, id)。 |
+
+audit_logs 仅记录已登录管理员的操作；系统自动动作只写运行日志。管理员触发后台任务时，触发请求仍记录管理员身份；将来若纳入系统自动动作审计或支持用户删号，须先修改设计并迁移。
 
 - submissions.score 已取消：v1.0 中它的含义不明；v1.1 用 passed_cases / total_cases 表达通过程度，不做部分得分。
 
 - attempts 的两个含义：在 submissions 里是“第几次被 claim”（围栏与重试预算）；在 user_problem_stats 里是“该用户对该题的提交次数”。
 
-- 修改测试数据不重判历史提交：submission_cases 保存 case_index 与 is_sample 的快照，测试点被删除时 test_case_id 置空，历史结果仍可读。
+- 后端行为：修改测试数据后，历史提交结果保留且不重判；submission_cases 继续保存 case_index 与 is_sample 快照，测试点删除后 test_case_id 置空，历史结果仍可读。
+
+- 展示与文案：不得把当前测试数据称为提交时的原始数据。
+
+- M1 已接受限制：test_cases.updated_at 只记录最后修改时点，不能恢复旧输入或期望输出；测试数据版本化或快照留待后续评估，见 [待确认清单](learning/open-questions.md)。
 
 ### 9.3 索引设计
 
-每个索引都要能指出“它在服务哪条查询”；指出不了的索引不建。
+查询索引必须能指出所服务的查询；唯一约束用于保证数据完整性，主键另行标明，不计入六项非主键唯一约束。
 
-| 索引 | 驱动查询 | 说明 |
-| --- | --- | --- |
-| users(username) 唯一 | 登录、注册查重 | — |
-| problems(status, difficulty, id) | 题库分页：status='PUBLISHED' + 难度筛选 + 按 id 排序 | 题量不大，主要用于规范与面试说明，不作为优化重点。 |
-| submissions(user_id, idempotency_key) 唯一 | 幂等兜底；重复提交时回读原记录 | 把“幂等”变成数据库约束，而不是约定。 |
-| submissions(user_id, id) | 个人提交历史（游标分页，按 id 倒序） | id 自增，与时间同序；游标避免深翻页的大 OFFSET。 |
-| submissions(user_id, problem_id, id) | 个人历史按题目筛选 | — |
-| submissions(user_id, status) | 在途提交数：status IN ('QUEUED','RUNNING') | 在途集合极小，计数几乎是常数成本。 |
-| submissions(status, queued_at) | 补偿扫描：长时间停留在 QUEUED 的记录 | status 区分度低，但被查询的取值（QUEUED）占比极小，索引依然高效。 |
-| submissions(status, lease_expires_at) | 恢复扫描：lease 已过期的 RUNNING | 同上。 |
-| submissions(problem_id, status) | 管理端按题目与状态筛选、题目维度统计 | — |
-| submission_cases(submission_id, case_index) 唯一 | 一次提交的明细 | 同时防止同一测试点重复写入。 |
-| user_problem_stats(user_id, problem_id) 主键 | 首次 AC 条件更新；用户通过题数统计 | 榜单重建全表扫描 solved=1，低频可接受。 |
+| 对象/列组 | 服务查询的索引 | 保证唯一的约束 | 说明 |
+| --- | --- | --- | --- |
+| users(username) | 登录、注册查重 | UNIQUE | uk_users_username |
+| problems(slug) | — | UNIQUE | uk_problems_slug |
+| test_cases(problem_id, case_index) | — | 联合 UNIQUE | uk_cases_problem_idx |
+| submissions(user_id, idempotency_key) | 幂等兜底；重复提交时回读原记录 | 联合 UNIQUE | 把“幂等”变成数据库约束，而不是约定。 |
+| submission_cases(submission_id, case_index) | 一次提交的明细 | 联合 UNIQUE | 同时防止同一测试点重复写入。 |
+| tags(name) | — | UNIQUE | 原为文字唯一声明，随完整 DDL 确认。 |
+| problems(status, difficulty, id) | 题库分页：status='PUBLISHED' + 难度筛选 + 按 id 排序 | — | 题量不大，主要用于规范与面试说明，不作为优化重点。 |
+| submissions(user_id, id) | 个人提交历史（游标分页，按 id 倒序） | — | id 自增，与时间同序；游标避免深翻页的大 OFFSET。 |
+| submissions(user_id, problem_id, id) | 个人历史按题目筛选 | — | — |
+| submissions(user_id, status) | 在途提交数：status IN ('QUEUED','RUNNING') | — | 在途集合极小，计数几乎是常数成本。 |
+| submissions(status, queued_at) | 补偿扫描：长时间停留在 QUEUED 的记录 | — | 在途集合极小，索引依然高效。 |
+| submissions(status, lease_expires_at) | 恢复扫描：lease 已过期的 RUNNING | — | 在途集合极小，索引依然高效。 |
+| submissions(problem_id, status) | 管理端按题目与状态筛选、题目维度统计 | — | — |
+| user_problem_stats(user_id, problem_id) | 首次 AC 条件更新；用户通过题数统计 | 联合 PRIMARY KEY | 榜单重建全表扫描 solved=1，低频可接受。 |
+
+外键约束自动创建的索引（如 first_ac_submission_id）不计入本清单；本清单只列人为设计、服务特定查询的索引。
 
 ### 9.4 EXPLAIN 验证方案
 
@@ -886,7 +905,7 @@ CREATE TABLE user_problem_stats (
 | submissions.code | 32 KB | Nginx 请求体限制 + Pydantic 长度校验，两层都要有。 |
 | test_cases.input_data / expected_output | 单点 ≤ 1 MB；每题 ≤ 50 个点 | 管理端接口校验；超大数据改走文件存储（19.2）。 |
 | error_message（编译输出） | 2 KB | 写入前截断，并标注已截断。 |
-| stdout_snippet / stderr_snippet | 1 KB / 2 KB | 仅非 AC 的样例点保存 stdout；仅运行时错误保存 stderr；AC 的测试点不保存任何输出。 |
+| stdout_snippet / stderr_snippet | 1 KB / 2 KB | 仅非 ACCEPTED 的样例点保存 stdout；仅 RUNTIME_ERROR 保存 stderr；ACCEPTED 的测试点不保存任何输出。 |
 | 提交列表查询 | — | 显式选列，不读取 code；详情页才读取。 |
 
 ### 9.6 迁移与数据保留
@@ -1161,7 +1180,7 @@ code 字段只在详情接口中返回，且只给提交者与管理员；历史
 
 ### 11.6 管理接口（/api/v1/admin）
 
-管理员接口统一放在 /api/v1/admin 下，由同一个依赖项做角色校验，所有写操作都会写入审计日志。
+管理员接口统一放在 /api/v1/admin 下，由同一个依赖项做角色校验，所有写操作都会写入审计日志（指管理员接口的写操作；系统自动动作只写运行日志）。
 
 
 测试点增删改及限制修改：题目存在 QUEUED/RUNNING 提交时拒绝，沿用 409 CONFLICT；提交接收与编辑操作须在事务协调下维持该约束，具体锁定方案由用户在 M1 确认。
