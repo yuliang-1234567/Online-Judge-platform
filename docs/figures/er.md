@@ -15,7 +15,7 @@ erDiagram
     problems ||--o{ problem_tags : has
     tags ||--o{ problem_tags : labels
     users ||--o{ audit_logs : operates
-    submissions ||--o| user_problem_stats : first_ac_reference
+    submissions |o--o| user_problem_stats : first_ac_reference
     users {
         bigint id PK
         varchar username UK
