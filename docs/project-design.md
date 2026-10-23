@@ -703,7 +703,7 @@ v1.1 变更｜新增 tags / problem_tags / user_problem_stats；submissions 增�
 | 枚举 | 用 VARCHAR + 应用层枚举，不用 MySQL ENUM | 状态值可读，便于迁移，也便于 NL2SQL 理解（9.7）。 |
 | 外键 | 使用物理外键 | 演示规模下开销可忽略，换来完整性；数据量扩大 10 倍后，可在迁移中去掉 submissions 相关外键，改由应用层保证（面试可讲的取舍）。 |
 | 软删除 | 不做；题目用 status=OFFLINE 下线 | 已有提交需要保留其题目与结果。 |
-| 迁移 | Alembic；tags、problem_tags、audit_logs 的完整 DDL 在 M1 数据库严格级设计中，与六张已有 DDL 一并补齐并确认，然后再编写包含全部九张表的首版迁移。 | 避免后续大改表。 |
+| 迁移 | Alembic；全部九张表的 DDL 已在 §9.2 补齐并确认；首版迁移须实现全部九表及逆序 downgrade；执行、发布与回滚见 §14.3。 | 避免后续大改表。 |
 
 被引用列恒为自增 id、永不更新；各外键仍须逐条显式声明 ON DELETE / ON UPDATE，本说明不替代约束子句。
 
