@@ -147,3 +147,45 @@
 - 读哪里：backend/alembic/env.py:33—44、backend/alembic/env.py:73—76
 - 及格线：能说明 --sql 只生成 SQL、不交给 MySQL 解析，因此可检查 SQL 生成与类型映射，不能证明数据库语法接受、真实执行或约束冲突。
 - [ ] 已答
+
+## 2026-10-23
+
+### Q1｜类型与默认值能不能顺手简化（5 分钟）
+
+- 对应改动：8e74434（九表首版迁移与离线结构验证）
+- 问：① id 的无符号属性、DATETIME 的毫秒精度分别由哪个 mysql 类型参数保留？② role 的字符串默认值与 created_at 的数据库表达式为何不能混写，updated_at 的 ON UPDATE 写在哪里？③ 给 submissions.queued_at 顺手加 CURRENT_TIMESTAMP(3) 默认值，是否仍符合本次迁移？
+- 读哪里：`backend/alembic/versions/0001_initial_schema.py:12—19`、`backend/alembic/versions/0001_initial_schema.py:34—54`、`backend/alembic/versions/0001_initial_schema.py:208—219`
+- 及格线：三小问均正确且能指出相应声明为对；只答对一至两问为半对；三问均错为错。
+- [ ] 已答
+
+### Q2｜列集合相同就算约束相同吗（5 分钟）
+
+- 对应改动：8e74434（复合主键、幂等唯一约束及列序测试）
+- 问：① 按顺序写出 user_problem_stats 与 problem_tags 的主键列，以及 uk_sub_user_idempotency 的列组合。② 两张复合主键表的主键列能否照抄 users.id 的 autoincrement=True？③ 对照本次独立基线，列集合相同但列序反了，测试应不应该放行？指出测试怎样保留顺序。
+- 读哪里：`backend/alembic/versions/0001_initial_schema.py:221—224`、`backend/alembic/versions/0001_initial_schema.py:251—284`、`backend/alembic/versions/0001_initial_schema.py:290—301`、`backend/tests/test_schema_check.py:843—859`
+- 及格线：三小问均正确为对；一至两问正确为半对；都错为错。第一问的三个列组必须全部与基线顺序一致，才算该小问正确。
+- [ ] 已答
+
+### Q3｜先建什么、先删什么（6 分钟）
+
+- 对应改动：8e74434（step2 索引、step3 外键与逆序 downgrade）、9c7a7ef（回退边界记录）
+- 问：① 普通索引和外键各在哪一步创建、各有多少条？downgrade 按什么类别顺序删除，第一张与最后一张删除的业务表分别是什么？② fk_sc_sub 与 fk_sc_case 的 ondelete 分别是什么，后者要求 test_case_id 满足什么可空条件，两者 onupdate 是什么？③ 为什么不能先删外键依赖的索引？重新 upgrade 能否恢复已被 drop_table 删除的数据？
+- 读哪里：`backend/alembic/versions/0001_initial_schema.py:331—337`、`backend/alembic/versions/0001_initial_schema.py:409—417`、`backend/alembic/versions/0001_initial_schema.py:230—245`、`backend/alembic/versions/0001_initial_schema.py:459—477`、`backend/alembic/versions/0001_initial_schema.py:541—599`、`docs/learning/07.4-initial-schema.md:31—35`
+- 及格线：三小问全部正确为对；一至两问正确为半对；全部错误为错。把结构重建等同于数据恢复，第三问直接判错。
+- [ ] 已答
+
+### Q4｜怎样证明语义测试不是假绿（6 分钟）
+
+- 对应改动：8e74434（离线列语义测试）、9c7a7ef（两次反例与还原证据）
+- 问：① Recorder 接替了哪个对象，调用 upgrade 后从哪里拿实际列定义？它需要 Engine 或数据库连接吗？② 比较前对 INTEGER/int、带引号的字符串默认值、带 ON UPDATE 的时间表达式分别做什么归一化？③ 把 audit_logs.resource_type 的 32 改成 16、给 submissions.queued_at 增加默认值，分别应在哪个比较项失败？两次故意改错后，为什么还要核对迁移文件前后 SHA-256？
+- 读哪里：`backend/tests/test_schema_check.py:809—842`、`backend/tests/test_schema_check.py:860—890`、`docs/learning/07.4-initial-schema.md:8—11`
+- 及格线：三小问全部正确为对；一至两问正确为半对；全部错误为错。第二问须说全三种归一化，第三问须分别指出两种错误及还原校验的作用。
+- [ ] 已答
+
+### Q5｜离线全绿后，哪些结论仍不能下（5 分钟）
+
+- 对应改动：8e74434（离线渲染禁连接测试）、9c7a7ef（实库未验证边界）
+- 问：① --sql 路径怎样在不创建 Engine 的情况下生成迁移文本，测试用什么办法让意外建 Engine 或连接直接失败？② 逐项判断“SQL 已能生成”“MySQL 已接受并执行”“真实 charset/collation 已验证”“四条自动外键支撑索引已实测”能否由本次离线通过推出。③ 列出后续实库轮要确认的四个自动索引列，并说明为何它们不能直接计成离线 SQL 漏写的四个普通索引。
+- 读哪里：`backend/alembic/env.py:33—44`、`backend/tests/test_schema_check.py:900—904`、`docs/learning/07.4-initial-schema.md:39—40`、`backend/tools/check_db_schema.py:228—241`
+- 及格线：三小问全部正确为对；一至两问正确为半对；全部错误为错。第二问必须逐项判断，第三问必须列全四处并区分索引用途。
+- [ ] 已答
