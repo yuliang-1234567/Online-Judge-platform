@@ -14,14 +14,15 @@ Python 后端求职项目，目标是实现题库、异步判题与结果查询�
 | 07.1 | 数据库表清单与 ER 对照核对（设计 §9，M1 前置） | 已完成 | 4e7df7f / b894d0b |
 | 07.2 | 按 12 项数据库决策更新设计 §9 与 ER 图 | 已完成 | 5e7ccb6 |
 | 07.3 | 三张文字表的建表语句与索引落定 | 已完成 | fa35097 |
+| 07.4 | 首版九表迁移与离线结构验证 | 离线验证通过；实库未验证 | 8e74434 |
 
 1. 日期依据是 [设计文档 §17.2「重排执行表」](docs/project-design.md#172-重排执行表)；06.5 对应其中「阶段06末尾，限半天」那一行。
 2. 06.x 是阶段06内部的施工编号，设计文档没有这一层编号。07.x 是阶段07内部的施工编号，设计文档同样没有这一层编号。
 3. 06.1—06.3 于 2026-10-19 完成，早于 §17.2 的计划窗口，原因是 Docker 网络问题未阻塞主线；如实记录，不为了对齐计划表而改日期。
 
-当前只实现 `GET /healthz`，返回 `200` 和 `{"status":"ok"}`；它只检查 API 进程存活，不检查 MySQL 或 Redis。其余业务接口、数据库迁移与判题流程均未实现；没有演示账号。MySQL/Redis 是本地开发依赖，API 在 WSL 本地运行。
+当前只实现 `GET /healthz`，返回 `200` 和 `{"status":"ok"}`；它只检查 API 进程存活，不检查 MySQL 或 Redis。其余业务接口与判题流程均未实现；首版迁移已实现并通过离线验证（未在真实 MySQL 执行），数据库表尚未创建；没有演示账号。MySQL/Redis 是本地开发依赖，API 在 WSL 本地运行。
 
-本地 `main` 已推送；截至提交 `e1b8148`，GitHub Actions 已运行 10 次，其中 9 次 `success`、1 次 `cancelled`、0 次 `failure`。那次 `cancelled` 是同一提交的重复触发被并发组取消（3 秒结束），不是失败；重复触发的成因未查明，记录在 [待确认清单](docs/learning/open-questions.md)。最近一次运行 [run 39551371745](https://github.com/yuliang-1234567/Online-Judge-platform/actions/runs/39551371745) 成功，耗时 11 秒，工作流 `Backend checks`。核验时远端文件树与本地已提交版本一致（tree SHA：`def530d39fd3828128324036f64c1c93adb88b73`），详见 [GitHub 验收记录](docs/evidence/github-verification.md)。当前工作流仅覆盖后端 Ruff 与已有 pytest 用例。
+本地主本提交 `8e74434` 尚未推送。2026-10-23 13:55:59+08:00 通过 [GitHub Actions API](https://api.github.com/repos/yuliang-1234567/Online-Judge-platform/actions/runs?branch=main&per_page=100) 核验：按 main 分支的 workflow run ID 计数，重跑 attempt 不另计，共 24 次，其中 23 次 `success`、1 次 `cancelled`、0 次 `failure`。最近一次 [run 39788377595](https://github.com/yuliang-1234567/Online-Judge-platform/actions/runs/39788377595) 为 `completed / success`，对应提交 `c6fd0c3`，工作流 `Backend checks`；该结果不覆盖尚未推送的主本 `8e74434`。重复触发的成因仍记在 [待确认清单](docs/learning/open-questions.md)。当前工作流仅覆盖后端 Ruff 与已有 pytest 用例。
 
 ## 前置环境
 
@@ -55,7 +56,7 @@ make lint
 make run
 ```
 
-`make install` 按锁文件安装依赖；`make dev-up` 只启动 MySQL/Redis 并等待健康检查。`make dev-check` 应依次得到 `mysqld is alive`、查询结果 `1`、`PONG`。默认 pytest 只收集并运行一个存活接口用例；Docker 探针通过下文的显式入口运行。
+`make install` 按锁文件安装依赖；`make dev-up` 只启动 MySQL/Redis 并等待健康检查。`make dev-check` 应依次得到 `mysqld is alive`、查询结果 `1`、`PONG`。默认只运行非 docker 标记的用例，探针用显式入口。
 
 `make run` 在前台启动 API，保留该终端；另开一个 WSL 终端执行：
 
