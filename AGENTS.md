@@ -7,7 +7,7 @@
   | 触发动作 | 必读文件 |
   |---|---|
   | 任何 Git 暂存、提交、推送、标签操作 | `.agents/skills/git-push-workflow/SKILL.md` |
-  | 在 `docs/` 下写或改文档、模块文档、学习笔记 | `.agents/skills/tech-doc-workflow/SKILL.md` |
+  | 新增、修改或审查本项目自维护的代码（不限目录、语言及前后端），或编写代码注释与 `docs/` 文档 | `.agents/skills/tech-doc-workflow/SKILL.md` |
   | 每轮工作（开始审要求、结尾列风险） | `.agents/skills/risk-checkpoint/SKILL.md` |
 - **规则优先级**：用户当前明确指令 > 本文件 > skill 文件 > 其他说明文档。冲突时停下报告，不自行取舍。
 - `docs/project-design.md` 是“做什么”的唯一依据；`docs/development-workflow.md` 是通用协作准备方案，`docs/ai-workflow.md` 记录 OJ 已确认的协作约定。

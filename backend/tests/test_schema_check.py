@@ -1,5 +1,7 @@
 """Exercise schema verification with synthetic metadata, never a live database."""
 
+# 前半部分用合成元数据检查核对器；后半部分分别检查实际迁移的 AST、
+# 内存声明与离线 SQL。三者互补，但都不能代替真实 MySQL 的执行与回退验证。
 import ast
 import copy
 import importlib.util
@@ -16,11 +18,13 @@ from sqlalchemy.exc import SQLAlchemyError
 from tools import check_db_schema as check
 
 
+# 基线来自已审核 fixture 和设计，测试不得根据当前迁移生成或改写它。
 @pytest.fixture
 def baseline():
     return check.load_baseline()
 
 
+# 给合成快照递归建立新容器，只移除出处；测试修改快照时不污染共享的期望结构。
 def clean(value):
     if isinstance(value, dict):
         return {key: clean(item) for key, item in value.items() if key != "source"}
@@ -41,6 +45,7 @@ def index(columns, unique=False):
     }
 
 
+# 这是按基线构造的“假实库”，用于单项破坏后验证核对器能否报错，不是采集证据。
 @pytest.fixture
 def snapshot(baseline):
     tables = clean(baseline["tables"])
@@ -51,6 +56,7 @@ def snapshot(baseline):
         table["indexes"]["PRIMARY"] = index(table["primary_key"]["columns"], True)
         for name, spec in table["unique_constraints"].items():
             table["indexes"][name] = index(spec["columns"], True)
+    # 模拟四组未被声明索引覆盖的外键支撑索引；这里不能证明 MySQL 实际建了它们。
     for table, name, column in (
         ("problems", "fk_problems_creator", "created_by"),
         ("submission_cases", "fk_sc_case", "test_case_id"),
@@ -99,6 +105,7 @@ def test_initial_matches_and_classifies_support_indexes(baseline, snapshot):
     assert classes["users"]["PRIMARY"] == "primary_key"
 
 
+# 参数化反例每次只改变一个属性；除了判失败，还核对差异路径，避免错因也算通过。
 @pytest.mark.parametrize(
     ("table", "column", "actual"),
     [
@@ -364,6 +371,7 @@ def test_default_normalization_preserves_literal_values(value, expected):
     assert check.normalize_default(value) == expected
 
 
+# SQLAlchemy 结果的最小替身：保留 mappings/scalars 迭代接口，不执行任何 SQL。
 class Rows:
     def __init__(self, values):
         self.values = values
@@ -375,6 +383,8 @@ class Rows:
         return iter(self.values)
 
 
+# read_snapshot 接收此连接替身，查询命中固定元数据；不认识或非 SELECT 的语句即失败。
+# 它验证查询选择与快照组装，不能验证 MySQL 是否接受 SQL 或返回相同元数据。
 class MetadataConnection:
     """Return controlled DBAPI-style metadata and reject non-SELECT statements."""
 
@@ -585,6 +595,7 @@ def test_url_percent_encoding_is_not_routed_through_ini(monkeypatch):
     assert url.password == "fake@pass%"
 
 
+# CLI 测试用的 Engine 替身只模拟连接上下文与 dispose 标志，不创建真实连接。
 class Engine:
     def __init__(self):
         self.disposed = False
@@ -607,6 +618,7 @@ def test_cli_exit_codes_and_json_output(
     monkeypatch.setenv(
         "DATABASE_URL_SYNC", "mysql+pymysql://example:fake@localhost/test"
     )
+    # 替换被测模块实际查找的入口；monkeypatch 会在测试结束后恢复，避免影响其他用例。
     monkeypatch.setattr(check, "create_engine", lambda *args, **kwargs: engine)
     monkeypatch.setattr(check, "read_snapshot", lambda *args: snapshot)
     code = check.main(["--expect", "base", "--format", "json"])
@@ -634,6 +646,7 @@ def test_cli_connection_error_returns_two_and_hides_credentials(monkeypatch, cap
     assert marker not in output
 
 
+# 把连接入口设为“调用即失败”，证明基线错误路径先停下，而不是先联网再发现错误。
 def test_cli_baseline_error_prevents_any_engine_creation(monkeypatch, capsys):
     def fail():
         raise check.CheckError("预期基线需复核：source 超出 §9")
@@ -647,6 +660,8 @@ def test_cli_baseline_error_prevents_any_engine_creation(monkeypatch, capsys):
     assert "预期基线需复核" in capsys.readouterr().out
 
 
+# AST 检查只解析源码：约束操作顺序和参数形状，防止把索引/外键偷放回建表中。
+# 它不求值 Column 的类型与默认值，下面的 Recorder 测试补这部分语义。
 def test_initial_migration_has_complete_upgrade_and_downgrade(baseline):
     path = check.ROOT / "backend/alembic/versions/0001_initial_schema.py"
     module = ast.parse(path.read_text(encoding="utf-8"))
@@ -659,6 +674,7 @@ def test_initial_migration_has_complete_upgrade_and_downgrade(baseline):
     assert [node.name for node in functions] == ["upgrade", "downgrade"]
     upgrade, downgrade = functions
 
+    # 当前迁移的 op 调用都是函数内顺序声明；检查完整列表，额外操作也会暴露。
     def op_calls(function):
         return [
             node
@@ -737,6 +753,7 @@ def test_initial_migration_has_complete_upgrade_and_downgrade(baseline):
     assert total_columns == 84
     assert total_unique_constraints == 6
 
+    # 对象按设计出处恢复约定的声明顺序；每个索引/外键内部的列序直接比较，不重排。
     expected_indexes = sorted(
         [
             (name, table_name, spec)
@@ -781,6 +798,7 @@ def test_initial_migration_has_complete_upgrade_and_downgrade(baseline):
             keyword.arg: ast.literal_eval(keyword.value) for keyword in call.keywords
         } == {"ondelete": spec["on_delete"], "onupdate": spec["on_update"]}
 
+    # 回退必须先外键、再索引、最后表，且各组逆序；仅核对数量无法防依赖顺序写错。
     downgrade_calls = op_calls(downgrade)
     assert [call.func.attr for call in downgrade_calls] == (
         ["drop_constraint"] * 12 + ["drop_index"] * 10 + ["drop_table"] * 9
@@ -807,12 +825,14 @@ def test_initial_migration_has_complete_upgrade_and_downgrade(baseline):
 
 
 def test_initial_migration_column_semantics_match_baseline(baseline, monkeypatch):
+    # importlib 加载真实版本文件，再替换其 op；调用 upgrade 时保留原始类型与约束构造。
     path = check.ROOT / "backend/alembic/versions/0001_initial_schema.py"
     spec = importlib.util.spec_from_file_location("initial_schema_semantics", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
+    # Recorder 把 create_table 收到的真实对象登记到 MetaData，不建 Engine、不发 SQL。
     class Recorder:
         def __init__(self):
             self.metadata = sa.MetaData()
@@ -820,21 +840,25 @@ def test_initial_migration_column_semantics_match_baseline(baseline, monkeypatch
         def create_table(self, name, *elements, **kwargs):
             sa.Table(name, self.metadata, *elements, **kwargs)
 
+        # 索引和外键的参数/顺序已由 AST 测试负责；此替身只收集表与列的语义。
         def create_index(self, *args, **kwargs):
             pass
 
         def create_foreign_key(self, *args, **kwargs):
             pass
 
+    # 编译器的 INTEGER 与基线的 int 是同义写法；只在声明测试中消除这种表示差异。
     def normalize_type(value):
         return str(value).strip().lower().replace("integer", "int")
 
+    # 此处对声明与基线两侧去引号、转小写；实库核对器另行保留字符串字面值的差异。
     def normalize_default(value):
         if value is None:
             return None
         return str(value).strip().strip("'\"").lower()
 
     recorder = Recorder()
+    # 模块内后续 op.* 都指向记录器；测的是实际迁移声明，不是复制一份期望代码。
     monkeypatch.setattr(module, "op", recorder)
     module.upgrade()
     assert set(recorder.metadata.tables) == set(baseline["tables"])
@@ -865,6 +889,8 @@ def test_initial_migration_column_semantics_match_baseline(baseline, monkeypatch
                 if column.server_default is not None
                 else None
             )
+            # MySQL 的 ON UPDATE 写在同一默认值表达式里；
+            # 拆开后分别比，防止漏掉更新行为。
             on_update = None
             if default is not None:
                 parts = re.split(r"\s+ON UPDATE\s+", default, maxsplit=1, flags=re.I)
@@ -884,6 +910,7 @@ def test_initial_migration_column_semantics_match_baseline(baseline, monkeypatch
                 "on_update": normalize_default(column_expected["on_update"]),
                 "auto_increment": column_expected["auto_increment"],
             }, location
+            # 真自增必须显式 True；其余可为 SQLAlchemy 的 auto，不能全断言为 False。
             if column_expected["auto_increment"]:
                 assert column.autoincrement is True, location
             else:
@@ -897,6 +924,7 @@ def test_initial_migration_offline_sql_never_connects(monkeypatch, direction):
 
     from alembic import command
 
+    # 离线入口若误建 Engine 或尝试 connect，立即失败；假 URL 只用于选择 MySQL 方言。
     def forbidden(*args, **kwargs):
         pytest.fail("Offline rendering must never create an engine or connection")
 
@@ -925,6 +953,7 @@ def test_initial_migration_offline_sql_never_connects(monkeypatch, direction):
         expected_tables = list(reversed(check.TABLE_ORDER))
         index_fragment = "DROP INDEX "
         foreign_key_fragment = " DROP FOREIGN KEY "
+    # 核对生成的操作和顺序，不代表 SQL 已交给 MySQL 解析，更不证明真实约束无冲突。
     lines = output.getvalue().splitlines()
     tables = [
         line.removeprefix(prefix).split()[0].rstrip(";")
@@ -936,6 +965,7 @@ def test_initial_migration_offline_sql_never_connects(monkeypatch, direction):
     assert sum(foreign_key_fragment in line for line in lines) == 12
 
 
+# ScriptDirectory 仅解析版本图，不运行 env.py；用来防配置解析时意外访问数据库。
 def test_alembic_configuration_resolves_revision_without_running_env():
     from alembic.config import Config
     from alembic.script import ScriptDirectory
@@ -947,6 +977,7 @@ def test_alembic_configuration_resolves_revision_without_running_env():
     assert script.get_revision("0001_initial_schema").down_revision is None
 
 
+# 模板在内存中渲染并解析，不写新迁移；覆盖变量替换后能否生成合法 Python。
 def test_standard_template_renders_valid_python_in_memory():
     from mako.template import Template
 

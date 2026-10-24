@@ -3,6 +3,7 @@ default_language_version:
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Ruff 版本与 backend/pyproject.toml 对齐；提交钩子只检查，不自动修复或格式化文件。
     rev: v0.17.1
     hooks:
       - id: ruff-check

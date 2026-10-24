@@ -1,5 +1,7 @@
+# 构建上下文先全部排除，再逐项放行，避免把 .env、虚拟环境等送入 Docker 构建。
 **
 !Dockerfile.dev
 !Dockerfile.dev.dockerignore
+# 放行父目录后才能放行其中的探针脚本；这里只包含构建需要的文件。
 !tools/
 !tools/worker_probe.py

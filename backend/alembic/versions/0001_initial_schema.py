@@ -1,3 +1,5 @@
+# 由 Alembic 环境调用：upgrade 分三步创建结构，downgrade 反向解除依赖。
+# 离线 --sql 只生成语句；真实执行与回退会改变数据库，回退还会删除表内数据。
 import sqlalchemy as sa
 from sqlalchemy.dialects import mysql
 
@@ -29,6 +31,9 @@ def upgrade():
     # problem_tags：2 列 / 唯一约束 0 / 外键 problem_id、tag_id（step 3 添加）
     # audit_logs：9 列 / 唯一约束 0 / 外键 user_id（step 3 添加）
 
+    # 默认值在数据库端生效：字符串作为字面量，数值和时间函数用 sa.text 表达式。
+    # updated_at 的 ON UPDATE 必须随 server_default 写进 DDL；server_onupdate
+    # 不生成这段 MySQL DDL。普通外键列引用已有 id，不继承主键的自增含义。
     op.create_table(
         "users",
         sa.Column(
@@ -209,6 +214,7 @@ def upgrade():
         sa.Column("lease_expires_at", mysql.DATETIME(fsp=3), nullable=True),
         sa.Column("request_id", mysql.VARCHAR(64), nullable=False),
         sa.Column("idempotency_key", mysql.VARCHAR(64), nullable=False),
+        # 入队时间由写入方明确提供；加默认值会掩盖漏传，且混淆入队与建行时间。
         sa.Column("queued_at", mysql.DATETIME(fsp=3), nullable=False),
         sa.Column("started_at", mysql.DATETIME(fsp=3), nullable=True),
         sa.Column("finished_at", mysql.DATETIME(fsp=3), nullable=True),
@@ -233,8 +239,10 @@ def upgrade():
             "id", mysql.BIGINT(unsigned=True), autoincrement=True, nullable=False
         ),
         sa.Column("submission_id", mysql.BIGINT(unsigned=True), nullable=False),
+        # 测试点删除后保留判题明细，通过可空引用配合 step 3 的 SET NULL。
         sa.Column("test_case_id", mysql.BIGINT(unsigned=True), nullable=True),
         sa.Column("case_index", mysql.INTEGER(unsigned=True), nullable=False),
+        # 这是本次判题的快照，由写入方提供；不能照搬 test_cases.is_sample 的默认 0。
         sa.Column("is_sample", mysql.TINYINT(display_width=1), nullable=False),
         sa.Column("status", mysql.VARCHAR(20), nullable=False),
         sa.Column("runtime_ms", mysql.INTEGER(unsigned=True), nullable=True),
@@ -248,6 +256,7 @@ def upgrade():
         mysql_collate="utf8mb4_0900_ai_ci",
     )
 
+    # 这张表和 problem_tags 用有序联合主键标识关系，两列均为已有 id，禁止自增。
     op.create_table(
         "user_problem_stats",
         sa.Column(
@@ -336,6 +345,8 @@ def upgrade():
     # problem_tags: idx_problem_tags_tag
     # audit_logs: idx_audit_logs_resource, idx_audit_logs_user
 
+    # 先建服务查询的索引，再加外键，使 MySQL 可复用已有索引的最左列前缀；
+    # 未覆盖的外键支撑索引由 MySQL 补齐，不在这里重复手建。
     op.create_index(
         "idx_problems_status_difficulty_id",
         "problems",
@@ -416,6 +427,8 @@ def upgrade():
     # problem_tags: fk_problem_tags_problem, fk_problem_tags_tag
     # audit_logs: fk_audit_logs_user
 
+    # 所有目标表已存在才添加外键；设计 DDL 的内联约束在此改为后置 ALTER。
+    # 两种呈现的最终结构应一致，删除动作仍逐条显式声明，不靠默认值。
     op.create_foreign_key(
         "fk_problems_creator",
         "problems",
@@ -456,6 +469,7 @@ def upgrade():
         onupdate="RESTRICT",
     )
 
+    # 明细随所属提交删除；测试点删除则只断开引用，保留历史判题结果。
     op.create_foreign_key(
         "fk_sc_sub",
         "submission_cases",
@@ -549,6 +563,7 @@ def downgrade():
     # test_cases: fk_cases_problem
     # problems: fk_problems_creator
 
+    # 先解除外键，再删可能被外键依赖的索引；否则 MySQL 可拒绝删除索引。
     op.drop_constraint("fk_audit_logs_user", "audit_logs", type_="foreignkey")
     op.drop_constraint("fk_problem_tags_tag", "problem_tags", type_="foreignkey")
     op.drop_constraint("fk_problem_tags_problem", "problem_tags", type_="foreignkey")
@@ -588,6 +603,7 @@ def downgrade():
     # submission_cases, submissions, test_cases
     # problems, tags, users
 
+    # 最后按建表的逆序删表；这只回退结构，不是恢复已删除业务数据的备份方案。
     op.drop_table("audit_logs")
     op.drop_table("problem_tags")
     op.drop_table("user_problem_stats")

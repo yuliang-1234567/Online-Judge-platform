@@ -20,10 +20,12 @@ url = "https://pypi.org/simple/"
 default = true
 
 [tool.ruff.lint]
+# E/F/I/B/UP 分别检查风格、常见错误、导入顺序、易错写法和可升级的 Python 语法。
 select = ["E", "F", "I", "B", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# backend 是导入根，让 app/tools 在本地与 CI 中使用同样的模块路径。
 pythonpath = ["."]
 markers = ["docker: explicit local Docker environment probes"]
 # 默认排除 docker 标记：普通 pytest 不应依赖本地 Docker；

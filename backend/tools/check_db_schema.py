@@ -1,5 +1,7 @@
 """Compare MySQL metadata with the reviewed design baseline using SELECT only."""
 
+# CLI 入口 main 先验证独立设计基线，再读取数据库事实，最后交给纯比较函数。
+# 本工具不执行迁移；read_snapshot 需要真实连接，测试用合成快照或替身隔离它。
 import argparse
 import hashlib
 import json
@@ -53,6 +55,7 @@ def design_section(design):
 
 def design_digest(design):
     """Fingerprint the nine design DDL blocks, independently of migrations."""
+    # 只提取 §9 的九段建表 SQL；迁移和实库都不能反过来生成期望值，否则会自证正确。
     lines, start, end = design_section(design)
     section = "\n".join(lines[start - 1 : end])
     fence = chr(96) * 3
@@ -88,6 +91,7 @@ def validate_baseline(baseline, design):
     ):
         raise CheckError("预期基线需复核：版本或表集合无效")
 
+    # 摘要防结构内容漂移，D: 行号再逐对象核验出处；任一失效都要求人工复核基线。
     def source(obj, location, pattern):
         value = obj.get("source", "")
         match = re.fullmatch(r"D:([1-9]\d*)", value) if isinstance(value, str) else None
@@ -161,6 +165,7 @@ def database_url():
 
 def normalize_default(value):
     """Normalize timestamp syntax while preserving literal string values."""
+    # 实库比较只统一时间函数写法；普通字符串保留大小写与空白，避免吞掉真实差异。
     if value is None:
         return None
     value = str(value)
@@ -173,6 +178,7 @@ def normalize_default(value):
 
 def without_sources(value):
     """Remove provenance only; COLUMN_TYPE and column order remain exact."""
+    # source 是设计出处而非数据库属性；只剥掉它，不改字段类型或列表列序。
     if isinstance(value, dict):
         return {
             key: without_sources(item) for key, item in value.items() if key != "source"
@@ -210,6 +216,7 @@ def declared_indexes(table):
 
 def differences(expected, actual, path):
     """Report missing, extra and changed properties with stable object paths."""
+    # 字典按对象名比较，不受键排列影响；列表保持顺序，联合键的列序不能排序抹平。
     result = []
     if isinstance(expected, dict) and isinstance(actual, dict):
         for key in sorted(expected.keys() - actual.keys()):
@@ -232,6 +239,8 @@ def classify_indexes(table, actual, path):
     structural purpose, not its origin; redundant or unique extras still fail.
     """
     declared = declared_indexes(table)
+    # 已声明索引的最左列前缀能覆盖外键时，不再要求额外支撑索引。
+    # 这里按结构用途分类，元数据本身不能证明该索引是 MySQL 自动创建的。
     required = {
         tuple(spec["columns"])
         for spec in table["foreign_keys"].values()
@@ -258,6 +267,7 @@ def classify_indexes(table, actual, path):
             continue
         model = actual[name]
         columns = tuple(model["columns"])
+        # 一个未覆盖列组只接受一个合规支撑索引；多余或带唯一性的索引仍报错。
         if columns in required and model == index_model(columns):
             required.remove(columns)
             classes[name] = "foreign_key_support"
@@ -270,6 +280,8 @@ def classify_indexes(table, actual, path):
 
 def compare_snapshot(baseline, snapshot, expect, require_empty_data=False):
     """Compare collected facts without executing any SQL or migration."""
+    # baseline 是审核过的期望，snapshot 是采集结果；此函数只比较内存数据。
+    # initial 要求九表及版本号，base 要求业务对象清空，但允许空的 Alembic 版本表。
     result = differences(
         without_sources(baseline["schema_defaults"]),
         snapshot["schema_defaults"],
@@ -327,18 +339,21 @@ def compare_snapshot(baseline, snapshot, expect, require_empty_data=False):
 
 def quote_identifier(value):
     """Quote database and fixed table names as MySQL identifiers, not SQL values."""
+    # 标识符不能当成 :schema 这样的值参数绑定；用反引号并转义内部反引号。
     quote = chr(96)
     return quote + value.replace(quote, quote * 2) + quote
 
 
 def read_snapshot(connection, require_empty_data=False):
     """Collect metadata and optional exact counts in the database selected by URL."""
+    # 连接由 main 持有并关闭；本层只读当前 URL 所选库，避免硬编码库名查错环境。
     database = connection.scalar(text("SELECT DATABASE()"))
     if not isinstance(database, str) or not database:
         raise CheckError("DATABASE_URL_SYNC 未选择数据库")
     parameters = {"schema": database}
 
     def rows(sql):
+        # 统一绑定 schema 值并转成按字段名访问的行；不是拼接用户输入到 SQL。
         return list(connection.execute(text(sql), parameters).mappings())
 
     schema = rows(
@@ -368,6 +383,7 @@ def read_snapshot(connection, require_empty_data=False):
     ):
         name = row["name"]
         if name == "alembic_version":
+            # Alembic 的版本表是迁移状态，不混进九张业务表的结构计数。
             version = snapshot["alembic_version"]
             version.update(present=True, kind=row["kind"])
             if row["kind"] == "BASE TABLE":
@@ -395,6 +411,7 @@ def read_snapshot(connection, require_empty_data=False):
             "check_constraints": [],
         }
     tables = snapshot["tables"]
+    # position 和完整 COLUMN_TYPE 保留精度/unsigned；默认值与 ON UPDATE 分开采集。
     for row in rows(
         "SELECT TABLE_NAME AS table_name, COLUMN_NAME AS name, "
         "ORDINAL_POSITION AS position, COLUMN_TYPE AS column_type, "
@@ -432,6 +449,7 @@ def read_snapshot(connection, require_empty_data=False):
             "WHERE CONSTRAINT_SCHEMA = :schema"
         )
     }
+    # 约束一列一行；依赖下面的 ORDINAL_POSITION 排序，才能还原联合键的列序。
     for row in rows(
         "SELECT t.TABLE_NAME AS table_name, t.CONSTRAINT_NAME AS name, "
         "t.CONSTRAINT_TYPE AS kind, k.COLUMN_NAME AS column_name, "
@@ -476,6 +494,7 @@ def read_snapshot(connection, require_empty_data=False):
             spec["referred_columns"].append(row["referred_column"])
         elif kind == "CHECK" and name not in table["check_constraints"]:
             table["check_constraints"].append(name)
+    # STATISTICS 同样一列一行，按 SEQ_IN_INDEX 拼装索引，列、前缀与方向一一对应。
     for row in rows(
         "SELECT TABLE_NAME AS table_name, INDEX_NAME AS name, "
         "NON_UNIQUE AS non_unique, COLUMN_NAME AS column_name, "
@@ -525,6 +544,7 @@ def read_snapshot(connection, require_empty_data=False):
                 f"WHERE {schema_column} = :schema ORDER BY {name_column}"
             )
         ]
+    # 表元数据的行数可能是估计值；显式要求空数据时才 SELECT COUNT(*)，成本也更高。
     if require_empty_data:
         for name in TABLE_ORDER:
             if name in tables and tables[name]["kind"] == "BASE TABLE":
@@ -572,7 +592,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     engine = None
     try:
+        # 基线不可信就先失败，不能为了核对一个过期的期望值去连接数据库。
         baseline = load_baseline()
+        # 驱动参数和查询不回显，连接错误也只输出受控信息，避免泄露凭据。
         engine = create_engine(
             database_url(),
             poolclass=NullPool,
@@ -596,6 +618,7 @@ def main(argv=None):
         TypeError,
         ValueError,
     ) as exc:
+        # 仅 CheckError 文本是本工具主动构造的安全说明；底层异常可能含连接信息。
         message = (
             str(exc)
             if isinstance(exc, CheckError)
@@ -605,6 +628,7 @@ def main(argv=None):
         return 2
     finally:
         if engine is not None:
+            # 连接上下文退出后再释放 Engine；失败路径同样执行，资源责任不交给调用者。
             engine.dispose()
     emit(
         {
@@ -616,6 +640,7 @@ def main(argv=None):
         },
         args.format,
     )
+    # 退出码区分“结构不匹配”(1) 与“无法完成核对”(2)，调用者不能都当成通过。
     return 1 if issues else 0
 
 

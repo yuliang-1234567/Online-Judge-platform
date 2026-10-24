@@ -1,5 +1,7 @@
 """Check disposable Worker/judge file sharing without application dependencies."""
 
+# 宿主 main 编排两个一次性容器；同一脚本以 inside 入口在容器内读写并报告证据。
+# 探针只验证本机同 UID 映射的文件链路，不代表跨 UID 隔离或生产判题沙箱已就绪。
 import argparse
 import hashlib
 import json
@@ -19,6 +21,8 @@ BACKEND = Path(__file__).resolve().parents[1]
 
 def docker(*args, timeout=15):
     """Run a bounded Docker command and preserve failures."""
+    # timeout 限制 Docker 客户端等待，不负责终止后台容器；
+    # 容器终止由 container 显式处理。
     result = subprocess.run(
         ["docker", *args], capture_output=True, text=True, timeout=timeout
     )
@@ -36,6 +40,7 @@ def digest(content):
 
 def build():
     """Build from the locally available base without installing dependencies."""
+    # 先确认本地基础镜像并记录 RepoDigest，再构建；不安装依赖，不自动拉取缺失镜像。
     print(docker("image", "inspect", BASE_IMAGE, "--format", "{{json .RepoDigests}}"))
     result = subprocess.run(
         [
@@ -62,6 +67,7 @@ def inside(role, root, case):
     identity = {"uid": os.getuid(), "gid": os.getgid()}
     if identity["uid"] == 0:
         raise RuntimeError("Container UID must not be root")
+    # worker 从宿主 seed 产生输入；judge 通过另一挂载点读同一内容并写独立输出。
     if role == "worker":
         content = (root / "seed.bin").read_bytes()
         (root / "input" / "marker.bin").write_bytes(content)
@@ -70,8 +76,10 @@ def inside(role, root, case):
         output = b"probe-output:" + content
         Path("/out/output.bin").write_bytes(output)
         identity["output_sha256"] = digest(output)
+    # 报告的是本进程读到的字节哈希与实际身份，路径字符串一致不能代替内容一致。
     identity["input_sha256"] = digest(content)
     print(json.dumps(identity), flush=True)
+    # 先留下可核对的文件与日志，再故意失败/睡眠；宿主才能检查异常时的退出与清理。
     if role == "judge" and case == "failure":
         return 23
     if role == "judge" and case == "timeout":
@@ -82,6 +90,7 @@ def inside(role, root, case):
 def container(role, case, root, run_id):
     """Start detached, wait, and inspect the actual terminated container."""
     name = f"oj-worker-probe-{run_id}-{role}"
+    # 显式沿用宿主 UID:GID；仅能写成功不足以证明非 root，稍后还检查容器内报告。
     uid, gid = os.getuid(), os.getgid()
     args = [
         "run",
@@ -94,10 +103,12 @@ def container(role, case, root, run_id):
         f"oj.probe.run={run_id}",
         "--user",
         f"{uid}:{gid}",
+        # 禁网与禁拉取分别切断运行时网络、缺镜像时的隐式下载，避免探针依赖网络。
         "--network",
         "none",
         "--pull",
         "never",
+        # 根文件系统只读；/tmp 用独立 tmpfs，禁 Python 字节码写入，保留必要临时空间。
         "--read-only",
         "--tmpfs",
         "/tmp:rw,noexec,nosuid,size=16m",
@@ -116,6 +127,8 @@ def container(role, case, root, run_id):
         "--pids-limit",
         "64",
     ]
+    # worker 模拟在工作目录生成输入；judge 的 input 只读、output 单独可写，
+    # 防止判题过程反写输入，也避免为输出授权而开放整个工作目录。
     if role == "worker":
         args += ["--mount", f"type=bind,src={root},dst={root}"]
     else:
@@ -128,12 +141,15 @@ def container(role, case, root, run_id):
     docker(*args, IMAGE, "inside", role, str(root), case)
     timed_out = False
     try:
+        # -d 把容器生命周期与客户端分开；wait 的输出才是容器退出码。
         exit_code = int(docker("wait", name, timeout=3 if case == "timeout" else 15))
     except subprocess.TimeoutExpired:
         # Killing only the CLI leaves the detached container alive.
+        # 等待客户端超时后要杀真正的容器，再 wait 取回原始退出码，不能只杀客户端。
         timed_out = True
         docker("kill", "--signal", "KILL", name)
         exit_code = int(docker("wait", name))
+    # inspect 二次确认已 exited 且退出码一致；被 SIGKILL 杀死应保留 137，不改成成功。
     inspected = json.loads(docker("inspect", name))[0]
     state = inspected["State"]
     if state["Status"] != "exited" or state["ExitCode"] != exit_code:
@@ -147,6 +163,7 @@ def container(role, case, root, run_id):
         raise RuntimeError("Unexpected filesystem or privilege configuration")
     if "PYTHONDONTWRITEBYTECODE=1" not in config["Env"]:
         raise RuntimeError("Bytecode writes were not disabled")
+    # 启动配置与容器内 os.getuid/getgid 都核对，避免仅看 --user 字符串造成假绿。
     observed = json.loads(docker("logs", name))
     if (observed["uid"], observed["gid"]) != (uid, gid):
         raise RuntimeError(f"Actual container identity mismatch: {observed}")
@@ -162,6 +179,7 @@ def container(role, case, root, run_id):
 
 def cleanup(root, run_id):
     """Remove only this run's containers and its validated temporary directory."""
+    # run_id 标签把清理范围限制到本次容器；再次查询确认删除，不只相信 rm 的返回。
     selector = f"label=oj.probe.run={run_id}"
     ids = docker("ps", "-aq", "--filter", selector).split()
     if ids:
@@ -170,6 +188,7 @@ def cleanup(root, run_id):
     if remaining:
         raise RuntimeError(f"Containers still exist: {remaining}")
     # Never turn an arbitrary caller-provided path into a recursive delete.
+    # 递归删除前同时校验父目录和完整运行名；拼错 root 时应拒绝，不能误删其他目录。
     if root.parent != Path("/tmp") or root.name != f"oj-worker-probe-{run_id}":
         raise RuntimeError(f"Refusing unexpected cleanup path: {root}")
     shutil.rmtree(root)
@@ -184,6 +203,7 @@ def run_probe(case):
     uid, gid = os.getuid(), os.getgid()
     if uid == 0:
         raise RuntimeError("Run the probe as the current non-root WSL user")
+    # bind mount 的源路径由 Docker daemon 解释；拒绝远程 daemon，避免同名路径不同文件。
     endpoint = docker("context", "inspect", "--format", "{{.Endpoints.docker.Host}}")
     if endpoint != "unix:///var/run/docker.sock" or os.environ.get("DOCKER_HOST"):
         raise RuntimeError("Probe requires the local WSL Docker daemon")
@@ -204,6 +224,7 @@ def run_probe(case):
     try:
         (root / "input").mkdir(mode=0o700)
         (root / "output").mkdir(mode=0o700)
+        # 每次生成新随机内容；宿主、worker、judge 独立读后比哈希，防止读到旧产物也通过。
         marker = secrets.token_bytes(64)
         (root / "seed.bin").write_bytes(marker)
         report["host_sha256"] = digest((root / "seed.bin").read_bytes())
@@ -228,6 +249,7 @@ def run_probe(case):
         report["containers"].append(judge)
         if judge["input_sha256"] != report["host_sha256"]:
             raise RuntimeError("Judge did not read the same content")
+        # 宿主再读输出并核对文件属主，证明非 root 写回；容器自报成功还不够。
         output = root / "output" / "output.bin"
         expected = b"probe-output:" + marker
         report["host_output_sha256"] = digest(output.read_bytes())
@@ -239,10 +261,12 @@ def run_probe(case):
             or report["output_owner"] != [uid, gid]
         ):
             raise RuntimeError("Output content or ownership mismatch")
+        # 正常完成证据核对后原样返回 judge 的 0/23/137；异常路径仍进入 finally 清理。
         exit_code = judge["exit_code"]
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
     finally:
+        # 分开保留原始结果与清理错误；清理失败必须让探针失败，不能只打印警告。
         report["original_exit_code"] = exit_code
         try:
             report["cleanup"] = cleanup(root, run_id)
@@ -256,6 +280,7 @@ def run_probe(case):
 
 def main():
     """Expose build, scenario, and container-only entry points."""
+    # build/场景由宿主调用，inside 由镜像入口调用；场景以 JSON 交付证据和进程退出码。
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "action", choices=["build", "success", "failure", "timeout", "inside"]

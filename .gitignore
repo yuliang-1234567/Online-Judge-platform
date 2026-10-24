@@ -8,6 +8,7 @@
 # Local environment and credentials; examples contain placeholders only
 .env
 .env.*
+# 后匹配规则优先：只重新允许占位模板，真实配置仍保持忽略。
 !.env.example
 *.pem
 *.key

@@ -16,9 +16,11 @@ services:
     # 只绑定回环地址：这两个服务只给本机开发用，不要暴露到局域网。
     ports:
       - "127.0.0.1:13306:3306"
+    # 命名卷保存数据库数据；容器重建不等于数据清空，dev-down 也不删除卷。
     volumes:
       - mysql_data:/var/lib/mysql
     mem_limit: 1g
+    # ping 用于进程就绪；账号确实能查询还要看 make dev-check 的 SELECT 1。
     healthcheck:
       test:
         - CMD-SHELL
@@ -36,6 +38,7 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in deploy/.env}
     # ${...} 由 compose 解析时展开，$${...} 留给容器内 shell；
     # 写成单个 $ 会让密码在这层就被替换成空值。
+    # sh -e 让命令错误直接退出；exec 让 Redis 接管进程，直接接收容器停止信号。
     command:
       - sh
       - -ec
@@ -45,6 +48,7 @@ services:
     volumes:
       - redis_data:/data
     mem_limit: 256m
+    # 检查走容器内部的 Redis，不经过宿主发布端口；认证信息由 shell 的环境展开。
     healthcheck:
       test:
         - CMD-SHELL

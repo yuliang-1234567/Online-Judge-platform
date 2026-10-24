@@ -1,5 +1,7 @@
 FROM python:3.12-slim
+# 禁字节码写入以配合只读根目录；无缓冲输出便于宿主及时读取超时前的证据。
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+# 仅复制标准库探针；构建不安装应用依赖，宿主通过 inside 参数选择容器角色。
 COPY tools/worker_probe.py /opt/worker_probe.py
 # 镜像内默认非 root，防止忘记 --user 时退化成 root 运行；实际身份由 --user 覆盖。
 USER 65532:65532
