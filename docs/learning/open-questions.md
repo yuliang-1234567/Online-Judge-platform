@@ -12,7 +12,7 @@
 | [project-design.md](../project-design.md) §19.1 关于 AI 辅助使用/披露的表述 | 待项目负责人决定是否调整及具体措辞；本轮不改设计 |
 | 当前 PAT 含 workflow scope，可修改 .github/workflows/；明文存于本机 ~/.git-credentials（权限 600，仅本仓库生效） | M1 验收后降权为 repo scope，或改用 SSH key 后撤销 |
 | GitHub Actions 重复触发原因：同一提交为什么一次 push 会触发两条 run（39259406493、39259410885） | 尚未查明，继续挂账；并发取消结果见 [GitHub 验收记录](../evidence/github-verification.md)。 |
-| 数据库表与 ER 核对：12 项已拍板及其落地状态，见 [db-schema-check.md](../evidence/db-schema-check.md) | 12 项已定稿；设计侧 12 项均已落地（5e7ccb6 落地 11 项，07.3 补齐第 5 项三表 DDL）；首版迁移已实现并离线验证（8e74434），未在真实 MySQL 执行；下文决策过程保留历史快照，实现现状以本行为准。 |
+| 数据库表与 ER 核对：12 项已拍板及其落地状态，见 [db-schema-check.md](../evidence/db-schema-check.md) | 12 项已定稿；设计侧 12 项均已落地（5e7ccb6 落地 11 项，07.3 补齐第 5 项三表 DDL）；首版迁移已实现并离线验证（8e74434）；2026-10-25 以 e55637a 在 MySQL 8.0.46 隔离库完成升级→回退→再升级与结构核对，隔离库已清理，开发库本轮未执行迁移；下文决策过程保留历史快照，实现现状以本行为准。 |
 
 严格级问题不能以时间到期为由跳过；通用问题按准备方案每周回看。
 

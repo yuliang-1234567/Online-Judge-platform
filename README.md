@@ -14,15 +14,18 @@ Python 后端求职项目，目标是实现题库、异步判题与结果查询�
 | 07.1 | 数据库表清单与 ER 对照核对（设计 §9，M1 前置） | 已完成 | 4e7df7f / b894d0b |
 | 07.2 | 按 12 项数据库决策更新设计 §9 与 ER 图 | 已完成 | 5e7ccb6 |
 | 07.3 | 三张文字表的建表语句与索引落定 | 已完成 | fa35097 |
-| 07.4 | 首版九表迁移与离线结构验证 | 离线验证通过；实库未验证 | 8e74434 |
+| 07.4 | 首版九表迁移与离线结构验证 | 离线通过；实库往返见 07.4b | 8e74434 |
+| 07.4b | MySQL 8 隔离库升级→回退→再升级与结构核对 | 已验证并清理；开发库本轮未迁移 | e55637a（验证时 HEAD） |
 
 1. 日期依据是 [设计文档 §17.2「重排执行表」](docs/project-design.md#172-重排执行表)；06.5 对应其中「阶段06末尾，限半天」那一行。
 2. 06.x 是阶段06内部的施工编号，设计文档没有这一层编号。07.x 是阶段07内部的施工编号，设计文档同样没有这一层编号。
 3. 06.1—06.3 于 2026-10-19 完成，早于 §17.2 的计划窗口，原因是 Docker 网络问题未阻塞主线；如实记录，不为了对齐计划表而改日期。
 
-当前只实现 `GET /healthz`，返回 `200` 和 `{"status":"ok"}`；它只检查 API 进程存活，不检查 MySQL 或 Redis。其余业务接口与判题流程均未实现；首版迁移已实现并通过离线验证（未在真实 MySQL 执行），数据库表尚未创建；没有演示账号。MySQL/Redis 是本地开发依赖，API 在 WSL 本地运行。
+当前只实现 `GET /healthz`，返回 `200` 和 `{"status":"ok"}`；它只检查 API 进程存活，不检查 MySQL 或 Redis。其余业务接口与判题流程均未实现；首版迁移已实现，并在 MySQL 8.0.46 隔离库完成升级→回退→再升级与结构核对，隔离库已清理；开发库本轮未执行迁移；没有演示账号。MySQL/Redis 是本地开发依赖，API 在 WSL 本地运行。
 
-本地主本提交 `8e74434` 尚未推送。2026-10-23 13:55:59+08:00 通过 [GitHub Actions API](https://api.github.com/repos/yuliang-1234567/Online-Judge-platform/actions/runs?branch=main&per_page=100) 核验：按 main 分支的 workflow run ID 计数，重跑 attempt 不另计，共 24 次，其中 23 次 `success`、1 次 `cancelled`、0 次 `failure`。最近一次 [run 39788377595](https://github.com/yuliang-1234567/Online-Judge-platform/actions/runs/39788377595) 为 `completed / success`，对应提交 `c6fd0c3`，工作流 `Backend checks`；该结果不覆盖尚未推送的主本 `8e74434`。重复触发的成因仍记在 [待确认清单](docs/learning/open-questions.md)。当前工作流仅覆盖后端 Ruff 与已有 pytest 用例。
+07.4 主本 `8e74434` 与记录 `9c7a7ef` 已于 2026-10-23 推送；2026-10-25 本轮核对本地 HEAD、origin/main 与 GitHub main，均为 `e55637a`。
+
+2026-10-25T17:00:19+08:00 通过 [GitHub Actions API](https://api.github.com/repos/yuliang-1234567/Online-Judge-platform/actions/runs?branch=main&per_page=100) 核验：按 main 分支的 workflow run ID 去重计数，重跑 attempt 不另计；本页返回 27 条，与 total_count 一致，共 27 次，其中 26 次 `success`、1 次 `cancelled`、0 次 `failure`、0 次未完成。最近一次 [run 40093329331](https://github.com/yuliang-1234567/Online-Judge-platform/actions/runs/40093329331) 为 `completed / success`，对应提交 `e55637a`，工作流 `Backend checks`。重复触发的成因仍记在 [待确认清单](docs/learning/open-questions.md)。当前工作流仅覆盖后端 Ruff 与已有 pytest 用例，不包含本轮手工隔离库往返验证。
 
 ## 前置环境
 
