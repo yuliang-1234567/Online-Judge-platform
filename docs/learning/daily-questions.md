@@ -189,3 +189,45 @@
 - 读哪里：`backend/alembic/env.py:33—44`、`backend/tests/test_schema_check.py:900—904`、`docs/learning/07.4-initial-schema.md:39—40`、`backend/tools/check_db_schema.py:228—241`
 - 及格线：三小问全部正确为对；一至两问正确为半对；全部错误为错。第二问必须逐项判断，第三问必须列全四处并区分索引用途。
 - [ ] 已答
+
+## 2026-10-25
+
+### Q1｜离线依赖与离线 SQL 是一回事吗（4 分钟）
+
+- 对应改动：7a6c0c0（07.4b 实库往返记录）
+- 问：`uv --offline` 与 Alembic `--sql` 分别限制什么？07.4b 的 `upgrade head` 实际有没有执行 DDL，目标是哪一个库？
+- 读哪里：docs/learning/07.4-initial-schema.md:59—69
+- 及格线：能区分两个开关并说出目标库与真实 DDL 为对；只答对其中一部分为半对，均错为错。
+- [ ] 已答
+
+### Q2｜升级、回退、再升级各留下什么（5 分钟）
+
+- 对应改动：7a6c0c0（往返结果与清理证据）
+- 问：第一次升级后有几张业务表、几张总表？回退到 base 后还剩哪张表及几行版本记录？再升级的完整结构摘要是否一致？为什么这不等于恢复历史数据？
+- 读哪里：docs/learning/07.4-initial-schema.md:67—72、docs/learning/07.4-initial-schema.md:78—87、docs/learning/07.4-initial-schema.md:92—95
+- 及格线：10 张总表中 9 张业务表；回退仅剩空的 alembic_version；再次结构摘要一致；重建结构不能恢复被删数据，四点全对为对，答对两至三点为半对，其余为错。
+- [ ] 已答
+
+### Q3｜为什么索引既是 10 又是 20（4 分钟）
+
+- 对应改动：7a6c0c0（实库索引分类记录）
+- 问：实测全部非主键索引是多少？按用途拆成哪三类、各多少？为什么四条外键支撑索引不能被算作漏写的查询索引？
+- 读哪里：docs/learning/07.4-initial-schema.md:80—90、docs/evidence/db-schema-check.md:146—147
+- 及格线：三类计数与用途均正确为对；只答对一项为半对，均错为错。
+- [ ] 已答
+
+### Q4｜外键动作验证到哪一层（5 分钟）
+
+- 对应改动：7a6c0c0（12 条外键的实库元数据核对）
+- 问：三类 DELETE/UPDATE 动作各有几条？`fk_sc_case` 为什么要求 `test_case_id` 可空？这次实测能否证明有数据时的删除动作一定符合预期？
+- 读哪里：docs/learning/07.4-initial-schema.md:83—95、docs/evidence/db-schema-check.md:116—133
+- 及格线：说出 10 条 RESTRICT/RESTRICT、1 条 CASCADE/RESTRICT、1 条 SET NULL/RESTRICT；说明 SET NULL 需要可空，并指出本次只核对结构、未插入数据测试动作；三项全对为对，一至两项为半对，否则为错。
+- [ ] 已答
+
+### Q5｜CI 绿能替代手工实库验收吗（4 分钟）
+
+- 对应改动：7a6c0c0（README 的 CI 快照与 07.4b 验收边界）
+- 问：README 的 27 次 CI 快照是在什么时间统计、最近 run 对应哪个提交？它能否证明提交 `7a6c0c0` 的 CI 已绿，或证明隔离库往返被 CI 执行？
+- 读哪里：README.md:24—28、docs/learning/07.4-initial-schema.md:92—96
+- 及格线：指出快照时间为 2026-10-25 17:00:19+08:00、最近 run 对应 `e55637a`；不能拿它证明后来的 `7a6c0c0` CI 或手工隔离库往返已被 CI 覆盖；两项均对为对，只答对一项为半对，均错为错。
+- [ ] 已答
