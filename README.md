@@ -16,16 +16,19 @@ Python 后端求职项目，目标是实现题库、异步判题与结果查询�
 | 07.3 | 三张文字表的建表语句与索引落定 | 已完成 | fa35097 |
 | 07.4 | 首版九表迁移与离线结构验证 | 离线通过；实库往返见 07.4b | 8e74434 |
 | 07.4b | MySQL 8 隔离库升级→回退→再升级与结构核对 | 已验证并清理；开发库本轮未迁移 | e55637a（验证时 HEAD） |
+| 07.5a | 注册、登录与当前用户鉴权；离线验证及学习材料 | 离线验证通过；实库集成未做 | 5009830 |
 
 1. 日期依据是 [设计文档 §17.2「重排执行表」](docs/project-design.md#172-重排执行表)；06.5 对应其中「阶段06末尾，限半天」那一行。
 2. 06.x 是阶段06内部的施工编号，设计文档没有这一层编号。07.x 是阶段07内部的施工编号，设计文档同样没有这一层编号。
 3. 06.1—06.3 于 2026-10-19 完成，早于 §17.2 的计划窗口，原因是 Docker 网络问题未阻塞主线；如实记录，不为了对齐计划表而改日期。
 
-当前只实现 `GET /healthz`，返回 `200` 和 `{"status":"ok"}`；它只检查 API 进程存活，不检查 MySQL 或 Redis。其余业务接口与判题流程均未实现；首版迁移已实现，并在 MySQL 8.0.46 隔离库完成升级→回退→再升级与结构核对，隔离库已清理；开发库本轮未执行迁移；没有演示账号。MySQL/Redis 是本地开发依赖，API 在 WSL 本地运行。
+当前已实现 GET /healthz 与 POST /api/v1/auth/register、POST /api/v1/auth/login、GET /api/v1/auth/me；认证已通过离线验证，未做隔离库集成验证，提交的是 AI 起草源码，用户练习未回移。healthz 返回 200 和 {"status":"ok"}，只检查进程存活；应用缺有效认证配置时启动失败，healthz 也不可用。题库与判题等其余业务尚未实现。首版迁移已在 MySQL 8.0.46 隔离库完成升级→回退→再升级与结构核对并清理；开发库未在这些验证中迁移，没有演示账号。MySQL/Redis 是本地开发依赖，API 在 WSL 本地运行。
 
 07.4 主本 `8e74434` 与记录 `9c7a7ef` 已于 2026-10-23 推送；2026-10-25 本轮核对本地 HEAD、origin/main 与 GitHub main，均为 `e55637a`。
 
-2026-10-25T17:00:19+08:00 通过 [GitHub Actions API](https://api.github.com/repos/yuliang-1234567/Online-Judge-platform/actions/runs?branch=main&per_page=100) 核验：按 main 分支的 workflow run ID 去重计数，重跑 attempt 不另计；本页返回 27 条，与 total_count 一致，共 27 次，其中 26 次 `success`、1 次 `cancelled`、0 次 `failure`、0 次未完成。最近一次 [run 40093329331](https://github.com/yuliang-1234567/Online-Judge-platform/actions/runs/40093329331) 为 `completed / success`，对应提交 `e55637a`，工作流 `Backend checks`。重复触发的成因仍记在 [待确认清单](docs/learning/open-questions.md)。当前工作流仅覆盖后端 Ruff 与已有 pytest 用例，不包含本轮手工隔离库往返验证。
+2026-11-01T13:43:18+08:00 本次推送前通过 [GitHub Actions API](https://api.github.com/repos/yuliang-1234567/Online-Judge-platform/actions/runs?branch=main&per_page=100) 核验 main 分支：按 run ID 去重、重跑 attempt 不另计，共 29 次（与 total_count 一致），28 success、1 cancelled、0 failure、0 未完成。最近 [run 40200558263](https://github.com/yuliang-1234567/Online-Judge-platform/actions/runs/40200558263) 为 completed / success，对应 9c774a6；此快照不计本次 07.5a 推送后新产生的运行。默认 CI 不含隔离库集成和私有练习节点。
+
+历史快照（保留统计时间）：2026-10-25T17:00:19+08:00 通过 [GitHub Actions API](https://api.github.com/repos/yuliang-1234567/Online-Judge-platform/actions/runs?branch=main&per_page=100) 核验：按 main 分支的 workflow run ID 去重计数，重跑 attempt 不另计；本页返回 27 条，与 total_count 一致，共 27 次，其中 26 次 `success`、1 次 `cancelled`、0 次 `failure`、0 次未完成。最近一次 [run 40093329331](https://github.com/yuliang-1234567/Online-Judge-platform/actions/runs/40093329331) 为 `completed / success`，对应提交 `e55637a`，工作流 `Backend checks`。重复触发的成因仍记在 [待确认清单](docs/learning/open-questions.md)。当前工作流仅覆盖后端 Ruff 与已有 pytest 用例，不包含本轮手工隔离库往返验证。
 
 ## 前置环境
 
@@ -46,7 +49,7 @@ cp deploy/.env.example deploy/.env
 chmod 600 deploy/.env
 ```
 
-复制只做一次；已有 `deploy/.env` 时保留原配置，不覆盖。用编辑器填写 `MYSQL_PASSWORD`、`MYSQL_ROOT_PASSWORD`、`REDIS_PASSWORD`，三者使用不同的本地密码。可分别运行 `python3 -c 'import secrets; print(secrets.token_hex(32))'` 生成不含 URL 特殊字符的值。保留模板中的数据库名和用户名；把连接 URL 中的 `REPLACE_ME` 分别替换成对应密码。`JWT_SECRET` 另行生成填写，目前 `/healthz` 尚未加载这些配置。真实 `.env` 已被 Git 忽略，不要提交。
+复制只做一次；已有 `deploy/.env` 时保留原配置，不覆盖。用编辑器填写 `MYSQL_PASSWORD`、`MYSQL_ROOT_PASSWORD`、`REDIS_PASSWORD`，三者使用不同的本地密码。可分别运行 `python3 -c 'import secrets; print(secrets.token_hex(32))'` 生成不含 URL 特殊字符的值。保留模板中的数据库名和用户名；把连接 URL 中的 `REPLACE_ME` 分别替换成对应密码。`JWT_SECRET` 另行生成填写（至少 32 字节）。应用在启动阶段校验配置；缺少有效密钥或连接 URL 时启动失败，`/healthz` 也不可用。启动成功后的存活检查不连接 MySQL 或 Redis。真实 `.env` 已被 Git 忽略，不要提交。
 
 ```bash
 make install
@@ -56,12 +59,12 @@ make dev-up
 make dev-check
 make test
 make lint
-make run
+(cd backend && uv run --locked --offline uvicorn app.main:app --env-file ../deploy/.env)
 ```
 
 `make install` 按锁文件安装依赖；`make dev-up` 只启动 MySQL/Redis 并等待健康检查。`make dev-check` 应依次得到 `mysqld is alive`、查询结果 `1`、`PONG`。默认只运行非 docker 标记的用例，探针用显式入口。
 
-`make run` 在前台启动 API，保留该终端；另开一个 WSL 终端执行：
+上面的 `uvicorn --env-file` 命令显式读取 `deploy/.env` 并在前台启动 API；仅填写文件不会自动注入进程环境。保留该终端；另开一个 WSL 终端执行：
 
 ```bash
 curl --fail --show-error http://127.0.0.1:8000/healthz
