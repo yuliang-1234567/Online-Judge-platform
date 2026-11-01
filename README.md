@@ -16,13 +16,14 @@ Python 后端求职项目，目标是实现题库、异步判题与结果查询�
 | 07.3 | 三张文字表的建表语句与索引落定 | 已完成 | fa35097 |
 | 07.4 | 首版九表迁移与离线结构验证 | 离线通过；实库往返见 07.4b | 8e74434 / 9c7a7ef |
 | 07.4b | MySQL 8 隔离库升级→回退→再升级与结构核对 | 已验证并清理；开发库验证时未迁移 | 7a6c0c0（记录；验证基线 e55637a） |
-| 07.5a | 注册、登录与当前用户鉴权；离线验证及学习材料 | 离线验证通过；实库集成未做 | 5009830 / 6675be6 |
+| 07.5a | 注册、登录与当前用户鉴权；离线验证及学习材料 | 离线验证通过；实库验证见 07.5b | 5009830 / 6675be6 |
+| 07.5b | 认证隔离 MySQL/Redis 集成、UTC 与生命周期验证 | 离线 306 passed、集成 8 项通过（run_id 6df187da）；已复核；学习待掌握 | 未提交 |
 
 1. 日期依据是 [设计文档 §17.2「重排执行表」](docs/project-design.md#172-重排执行表)；06.5 对应其中「阶段06末尾，限半天」那一行。
 2. 06.x 是阶段06内部的施工编号，设计文档没有这一层编号。07.x 是阶段07内部的施工编号，设计文档同样没有这一层编号。
 3. 06.1—06.3 于 2026-10-19 完成，早于 §17.2 的计划窗口，原因是 Docker 网络问题未阻塞主线；如实记录，不为了对齐计划表而改日期。
 
-当前已实现 `GET /healthz`、`POST /api/v1/auth/register`、`POST /api/v1/auth/login`、`GET /api/v1/auth/me`；认证已通过离线验证，未做隔离库集成验证。题库与判题等其余业务尚未实现。提交的是 AI 起草源码，用户练习未回移；学习待掌握与代码已交付分别记录，见 [练习包流程](.agents/skills/practice-drill-workflow/SKILL.md)。
+当前已实现 `GET /healthz`、`POST /api/v1/auth/register`、`POST /api/v1/auth/login`、`GET /api/v1/auth/me`；认证已通过离线验证及本地隔离 MySQL/Redis 集成验证，07.5b 当前改动待复核、未提交。题库与判题等其余业务尚未实现。提交的是 AI 起草源码，用户练习未回移；学习待掌握与代码已交付分别记录，见 [练习包流程](.agents/skills/practice-drill-workflow/SKILL.md)。
 
 `/healthz` 返回 `200` 和 `{"status":"ok"}`，只检查进程存活；应用缺有效认证配置时启动失败，`/healthz` 也不可用。API 启动和存活检查不会建表或验证依赖可用。
 
@@ -124,6 +125,18 @@ uv run --locked ruff check .
 uv run --locked ruff format --check .
 uv run --locked pytest
 ```
+
+## 认证隔离集成验证（07.5b）
+
+默认 pytest/CI 排除认证集成目录。显式运行前需本地 MySQL/Redis 已就绪、deploy/.env 有效且后端依赖已同步；在 backend/ 执行：
+
+```bash
+uv run --locked --offline --no-sync python -B tools/auth_integration.py
+```
+
+该命令会创建 oj_auth_check、独立应用/迁移账号，迁移并运行八项实库测试，再按归属清理。Redis 使用共享开发实例的 /4 和本轮 run_id 前缀；不迁移开发库，不开放 --clear、恢复子命令或 FLUSHDB。失败/中断先停进程、留证，再清理归属匹配的资源；归属不明或留证失败则保留。证据 run_id 为 6df187da8e63476b91e6084c24e43c4a。
+
+本地证据覆盖真实认证、大小写并发冲突、事务回滚、状态/角色重读、Lua/TTL、限流、连接池恢复及 UTC。HTTP 经过进程内 ASGI，尚不代表公网链路、压测或 M1 整体验收。结果和边界见 [07.5b 学习记录](docs/learning/07.5b-auth-integration.md)；脱敏运行报告存于私有 local-reference/runtime/07.5b/<run_id>/。
 
 ## Worker 环境探针（06.5）
 
