@@ -14,21 +14,32 @@ Python 后端求职项目，目标是实现题库、异步判题与结果查询�
 | 07.1 | 数据库表清单与 ER 对照核对（设计 §9，M1 前置） | 已完成 | 4e7df7f / b894d0b |
 | 07.2 | 按 12 项数据库决策更新设计 §9 与 ER 图 | 已完成 | 5e7ccb6 |
 | 07.3 | 三张文字表的建表语句与索引落定 | 已完成 | fa35097 |
-| 07.4 | 首版九表迁移与离线结构验证 | 离线通过；实库往返见 07.4b | 8e74434 |
-| 07.4b | MySQL 8 隔离库升级→回退→再升级与结构核对 | 已验证并清理；开发库本轮未迁移 | e55637a（验证时 HEAD） |
-| 07.5a | 注册、登录与当前用户鉴权；离线验证及学习材料 | 离线验证通过；实库集成未做 | 5009830 |
+| 07.4 | 首版九表迁移与离线结构验证 | 离线通过；实库往返见 07.4b | 8e74434 / 9c7a7ef |
+| 07.4b | MySQL 8 隔离库升级→回退→再升级与结构核对 | 已验证并清理；开发库验证时未迁移 | 7a6c0c0（记录；验证基线 e55637a） |
+| 07.5a | 注册、登录与当前用户鉴权；离线验证及学习材料 | 离线验证通过；实库集成未做 | 5009830 / 6675be6 |
 
 1. 日期依据是 [设计文档 §17.2「重排执行表」](docs/project-design.md#172-重排执行表)；06.5 对应其中「阶段06末尾，限半天」那一行。
 2. 06.x 是阶段06内部的施工编号，设计文档没有这一层编号。07.x 是阶段07内部的施工编号，设计文档同样没有这一层编号。
 3. 06.1—06.3 于 2026-10-19 完成，早于 §17.2 的计划窗口，原因是 Docker 网络问题未阻塞主线；如实记录，不为了对齐计划表而改日期。
 
-当前已实现 GET /healthz 与 POST /api/v1/auth/register、POST /api/v1/auth/login、GET /api/v1/auth/me；认证已通过离线验证，未做隔离库集成验证，提交的是 AI 起草源码，用户练习未回移。healthz 返回 200 和 {"status":"ok"}，只检查进程存活；应用缺有效认证配置时启动失败，healthz 也不可用。题库与判题等其余业务尚未实现。首版迁移已在 MySQL 8.0.46 隔离库完成升级→回退→再升级与结构核对并清理；开发库未在这些验证中迁移，没有演示账号。MySQL/Redis 是本地开发依赖，API 在 WSL 本地运行。
+当前已实现 `GET /healthz`、`POST /api/v1/auth/register`、`POST /api/v1/auth/login`、`GET /api/v1/auth/me`；认证已通过离线验证，未做隔离库集成验证。题库与判题等其余业务尚未实现。提交的是 AI 起草源码，用户练习未回移；学习待掌握与代码已交付分别记录，见 [练习包流程](.agents/skills/practice-drill-workflow/SKILL.md)。
 
-07.4 主本 `8e74434` 与记录 `9c7a7ef` 已于 2026-10-23 推送；2026-10-25 本轮核对本地 HEAD、origin/main 与 GitHub main，均为 `e55637a`。
+`/healthz` 返回 `200` 和 `{"status":"ok"}`，只检查进程存活；应用缺有效认证配置时启动失败，`/healthz` 也不可用。API 启动和存活检查不会建表或验证依赖可用。
+
+首版迁移已在 MySQL 8.0.46 隔离库完成升级→回退→再升级与结构核对并清理；这些验证没有迁移开发库。新建开发库需手动执行下文迁移才能使用认证接口；当前没有演示账号。MySQL/Redis 是本地开发依赖，API 在 WSL 本地运行。
+
+07.4 主本 `8e74434` 与记录 `9c7a7ef` 已于 2026-10-23 推送。07.4b 记录 `7a6c0c0`、07.5a 主本 `5009830` 与记录 `6675be6`、练习协作规则 `87cd540` 均已发布；2026-11-01 API 核验 GitHub main 为 `87cd540`。
+
+2026-11-01T14:45:22+08:00 通过 [GitHub Actions API](https://api.github.com/repos/yuliang-1234567/Online-Judge-platform/actions/runs?branch=main&per_page=100) 核验 main 分支：按 run ID 去重，重跑 attempt 不另计，共 31 次（与 total_count 一致），30 success、1 cancelled、0 failure、0 未完成。最近 [run 41281465672](https://github.com/yuliang-1234567/Online-Judge-platform/actions/runs/41281465672) 为 completed / success，对应 `87cd540`。这是该时点的远端快照，不包含本次 README 修改；默认 CI 不含隔离库集成和私有练习节点。
+
+<details>
+<summary>历史 CI 快照（保留原统计时间）</summary>
 
 2026-11-01T13:43:18+08:00 本次推送前通过 [GitHub Actions API](https://api.github.com/repos/yuliang-1234567/Online-Judge-platform/actions/runs?branch=main&per_page=100) 核验 main 分支：按 run ID 去重、重跑 attempt 不另计，共 29 次（与 total_count 一致），28 success、1 cancelled、0 failure、0 未完成。最近 [run 40200558263](https://github.com/yuliang-1234567/Online-Judge-platform/actions/runs/40200558263) 为 completed / success，对应 9c774a6；此快照不计本次 07.5a 推送后新产生的运行。默认 CI 不含隔离库集成和私有练习节点。
 
 历史快照（保留统计时间）：2026-10-25T17:00:19+08:00 通过 [GitHub Actions API](https://api.github.com/repos/yuliang-1234567/Online-Judge-platform/actions/runs?branch=main&per_page=100) 核验：按 main 分支的 workflow run ID 去重计数，重跑 attempt 不另计；本页返回 27 条，与 total_count 一致，共 27 次，其中 26 次 `success`、1 次 `cancelled`、0 次 `failure`、0 次未完成。最近一次 [run 40093329331](https://github.com/yuliang-1234567/Online-Judge-platform/actions/runs/40093329331) 为 `completed / success`，对应提交 `e55637a`，工作流 `Backend checks`。重复触发的成因仍记在 [待确认清单](docs/learning/open-questions.md)。当前工作流仅覆盖后端 Ruff 与已有 pytest 用例，不包含本轮手工隔离库往返验证。
+
+</details>
 
 ## 前置环境
 
@@ -59,10 +70,28 @@ make dev-up
 make dev-check
 make test
 make lint
-(cd backend && uv run --locked --offline uvicorn app.main:app --env-file ../deploy/.env)
 ```
 
 `make install` 按锁文件安装依赖；`make dev-up` 只启动 MySQL/Redis 并等待健康检查。`make dev-check` 应依次得到 `mysqld is alive`、查询结果 `1`、`PONG`。默认只运行非 docker 标记的用例，探针用显式入口。
+
+### 使用认证接口前：准备业务表
+
+`make dev-up` 在新数据卷中初始化数据库和账号，不创建业务表；`make dev-check` 也不运行迁移。仅检查 `/healthz` 无需建表，注册/登录/me 则需要已有 `users` 表。
+
+下面命令会连接并修改 `DATABASE_URL_SYNC` 指向的数据库。执行前在本地确认它与 `DATABASE_URL` 指向同一开发库（模板为 `127.0.0.1:13306/oj`，账号 `oj_app`），不要打印连接串。已有数据库先核对版本；若已有业务表但没有对应迁移记录，停止核对，不用删卷或 `stamp` 绕过。
+
+```bash
+(cd backend && uv run --locked --offline --env-file ../deploy/.env alembic -c alembic.ini current)
+(cd backend && uv run --locked --offline --env-file ../deploy/.env alembic -c alembic.ini upgrade head)
+```
+
+迁移显式使用同步 `mysql+pymysql` 连接；应用使用异步 `mysql+asyncmy` 连接。首次迁移应创建九张业务表及 `alembic_version`，当前版本为 `0001_initial_schema`。这是开发操作说明，07.5a 的认证实库集成仍未验收。
+
+### 启动 API
+
+```bash
+(cd backend && uv run --locked --offline uvicorn app.main:app --env-file ../deploy/.env)
+```
 
 上面的 `uvicorn --env-file` 命令显式读取 `deploy/.env` 并在前台启动 API；仅填写文件不会自动注入进程环境。保留该终端；另开一个 WSL 终端执行：
 
@@ -71,6 +100,16 @@ curl --fail --show-error http://127.0.0.1:8000/healthz
 ```
 
 预期响应 `{"status":"ok"}`。Swagger 地址为 `http://127.0.0.1:8000/docs`。用 Ctrl+C 停止 API；`make dev-down` 停止依赖服务并保留数据卷。
+
+### 认证接口快速检查
+
+先完成业务表迁移并保持 MySQL/Redis 可用，再在 Swagger 中操作：
+
+1. `POST /api/v1/auth/register`：填写 `username`、`password`；用户名为 3–32 个 ASCII 字母、数字或下划线，注册密码为 15–128 Unicode 码点且不能全为空白。成功返回 `201`，注册只创建普通用户。
+2. `POST /api/v1/auth/login`：使用刚注册的凭据，成功返回 `200`；从响应取得 `access_token`。
+3. 点击 Swagger 的 **Authorize**，填入 token 本身，不加引号或重复的 `Bearer ` 前缀；再执行 `GET /api/v1/auth/me`，应返回当前用户公开信息，不含 `password_hash`。
+
+这些操作会真实访问依赖并可能写入用户或限流数据，不属于默认 pytest。错误码、输入约束及验证边界见 [认证模块文档](docs/modules/auth.md)；接口可用不代表用户已通过理解验收。
 
 ## 检查与 CI
 
@@ -104,9 +143,9 @@ make probe
 
 ## 排障
 
-- **缺少配置**：缺 .env 时 make 返回 2 属正常。应看到中文提示；先复制模板并填写凭据，再运行 `make dev-up`。不要用忽略错误的方式绕过失败。
+- **缺少配置**：`make dev-up` 在缺 `deploy/.env` 时输出中文提示并失败；它不替 API 注入环境。API 报“认证配置错误”时，检查配置是否填写完整，并使用上面的显式 env-file 启动命令。不要用忽略错误的方式绕过失败。
 - **13306/16379 被占用**：Compose 会报告端口无法绑定。在 WSL 用 `ss -ltnp '( sport = :13306 or sport = :16379 )'` 检查，也需检查 Windows 侧监听。先识别占用服务，再决定停止它或调整 Compose 的宿主端口及 `.env` 中所有对应 URL；继续绑定 `127.0.0.1`，不要直接映射到公网地址。
-- **WSL 会话被回收**：实例停止期间，API 和依赖服务会停。保留开发会话；重新进入 WSL 后运行 `make dev-up`、`make dev-check`，再运行 `make run`。容器重启策略的边界及曾观察到的退出事件见 [06.3 记录](docs/learning/06.3-dev-services.md)。
+- **WSL 会话被回收**：实例停止期间，API 和依赖服务会停。保留开发会话；重新进入 WSL 后运行 `make dev-up`、`make dev-check`，再从仓库根执行 `(cd backend && uv run --locked --offline uvicorn app.main:app --env-file ../deploy/.env)`。已有数据卷不需要为重启重复初始化。容器重启策略的边界及曾观察到的退出事件见 [06.3 记录](docs/learning/06.3-dev-services.md)。
 - **拉镜像超时**：`make dev-up` 的拉取阶段可能出现 `i/o timeout`、`TLS handshake timeout` 或 `context deadline exceeded`，这时尚未进入数据库健康检查。先用 `docker version` 判断 daemon 是否可用，再用 `docker pull mysql:8.0` 或 `docker pull redis:7` 单独复现；不要把客户端 curl 可达等同于 daemon 可达。只读核对 daemon 的有效配置，区分连接超时与凭据/限流错误；registry 返回 401 是认证入口的正常响应。不要自行更换代理、DNS 或镜像源；环境结论见 [ADR-016](docs/adr/ADR-016-wsl-development-environment.md)。
 - **数据库登录失败**：先检查 `.env` 与连接 URL 是否一致。已有数据卷时，修改初始化密码变量不会改掉库内密码；不要为了重试随意删卷。
 
@@ -115,5 +154,7 @@ make probe
 - [设计与里程碑](docs/project-design.md)
 - [协作约定](docs/ai-workflow.md) 与 [仓库规则](AGENTS.md)
 - [学习记录](docs/learning/) 与 [验证记录](docs/evidence/06.4-local-checks.md)、[数据库表与 ER 核对](docs/evidence/db-schema-check.md)
+- [认证模块与错误边界](docs/modules/auth.md) 与 [Worker 探针模块](docs/modules/worker-probe.md)
+- [练习包流程：不剥离、不回移，交付与学习分开](.agents/skills/practice-drill-workflow/SKILL.md)
 - [三层记录工作流](.agents/skills/tech-doc-workflow/SKILL.md)
 - [每轮风险拍板点规则](.agents/skills/risk-checkpoint/SKILL.md)
