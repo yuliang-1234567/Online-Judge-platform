@@ -1026,14 +1026,14 @@ v1.1 变更｜新增数据丢失后的恢复表、缓存三大问题与一致性
 
 - 在途上限：每个用户在途提交数（QUEUED + RUNNING）不超过上限（初始建议 3），查询走索引 (user_id, status)。这是软限制：并发下可能多放过一两个，可以接受。
 
-- 响应：超限返回 429，带 Retry-After，错误码区分 RATE_LIMITED 与 TOO_MANY_INFLIGHT。
+- 响应：超限返回 429，带 Retry-After，错误码区分 RATE_LIMITED 与 TOO_MANY_INFLIGHT。认证哈希每应用实例（生产即每进程）共享 CapacityLimiter(2)，真实与 dummy 同池；满额立即返回 429/RATE_LIMITED、Retry-After: 1，不排队、不按依赖故障返回 503。
 
-- 降级：Redis 不可用时，查询类与登录接口放行并记录告警日志；提交接口放行，但仍受 MySQL 在途上限约束。这是已接受的降级：Redis 同时是 broker，它不可用时系统本就处于故障状态，重点是尽快恢复而不是在此时拒绝所有请求。
+- 降级：Redis 不可用时，查询类与登录接口放行并记录无凭据的告警日志；注册返回 503/SERVICE_UNAVAILABLE；提交接口放行，但仍受 MySQL 在途上限约束。Redis 同时是 broker，故障期注册暂停是可接受的降级，不承诺故障期间限流仍有效。
 
 | 场景 | 维度 | 初始阈值（建议） | 说明 |
 | --- | --- | --- | --- |
-| 登录失败 | IP + 用户名 | 5 次 / 分钟 | 同时返回一致的错误信息，防枚举。 |
-| 注册 | IP | 5 次 / 小时 | 防批量注册。 |
+| 登录失败 | IP + 小写用户名 | 5 次 / 分钟 | 先按注册同款 ASCII 格式校验（不合法 422），再小写归一；五次失败后下一次拒绝。并发已在途校验可能多计，不保证跨不同用户名的 IP 总限速；键以 RATE_LIMIT_KEY_PREFIX 隔离。 |
+| 注册 | IP | 5 次 / 小时 | 按格式合法的注册尝试计数，包含重名；不信任客户端自行提供的转发 IP 头。 |
 | 提交代码 | 用户 | 10 次 / 分钟；在途 ≤ 3 | 防灌队列。 |
 | 查询类 | 用户或 IP | 60 次 / 分钟 | 匿名按 IP。 |
 | Nginx 层 | IP | 粗粒度 limit_req | 挡住最粗暴的洪泛，细粒度交给应用。 |
@@ -1123,9 +1123,9 @@ v1.1 变更｜接口由 10 个补全到 30 个并按“公开 / 用户 / 管理�
 
 | 方法 | 路径 | 用途 | 权限 |
 | --- | --- | --- | --- |
-| POST | /api/v1/auth/register | 注册；用户名唯一，密码长度与强度校验 | 公开（IP 限流） |
-| POST | /api/v1/auth/login | 登录并获取 JWT；失败信息统一 | 公开（失败限流） |
-| GET | /api/v1/auth/me | 当前用户信息（角色、状态） | 用户 |
+| POST | /api/v1/auth/register | JSON 请求仅 username/password；用户名 3–32 个 ASCII 字母、数字或下划线（不支持中文），唯一性按现有 utf8mb4_0900_ai_ci、大小写不敏感；成功 201，返回 id/username/role/status/created_at；重复用户名 409/CONFLICT，非法输入 422/VALIDATION_ERROR，限流 429/RATE_LIMITED，依赖故障 503/SERVICE_UNAVAILABLE | 公开（IP 限流） |
+| POST | /api/v1/auth/login | JSON 请求仅 username/password；用户名格式同注册，密码 1–128 Unicode 码点；成功 200，返回 access_token/token_type（bearer）/expires_in（秒）；不存在用户与错误密码统一 401/UNAUTHENTICATED、文案“用户名或密码错误”；正确密码但禁用为 403/FORBIDDEN，另有 422/429/503 | 公开（失败限流） |
+| GET | /api/v1/auth/me | Authorization: Bearer；成功 200，返回 id/username/role/status/created_at；无效或缺失 token、用户不存在均 401/UNAUTHENTICATED；禁用 403/FORBIDDEN，数据库故障 503/SERVICE_UNAVAILABLE；不返回 password_hash | 用户 |
 
 MVP 不提供服务端登出与 refresh：登出由前端丢弃 token 完成，access token 有效期短（12.2）。
 
@@ -1293,11 +1293,11 @@ v1.1 变更｜新增认证与会话细则、测试数据保护、输入与资源
 
 | 主题 | 决策 |
 | --- | --- |
-| 密码存储 | argon2id（或 bcrypt）加盐哈希；设置最小长度；绝不记录明文；哈希在线程池执行（4.4）。 |
-| JWT | HS256；解码时显式指定算法白名单；密钥来自环境变量、足够长；payload 只放 sub、iat、exp。 |
-| 有效期 | access token 短有效期（初始建议 30–60 分钟）；MVP 不做 refresh 与吊销黑名单（2.4 决策 7）。 |
+| 密码存储 | Argon2id 加盐哈希；注册密码 15–128 Unicode 码点，拒绝全空白，不 trim、不做 Unicode 规范化；登录不套注册最小长度。用户名唯一性按现有 utf8mb4_0900_ai_ci、大小写不敏感。绝不记录明文；哈希在线程池执行（4.4），请求取消后等线程结束才释放准入名额。 |
+| JWT | HS256 固定白名单；JWT_SECRET 用 SecretStr，至少 32 字节，仅局部解包、不转储配置；payload 只放 sub/iat/exp。sub 必须 re.fullmatch(r"[1-9][0-9]*", value)，转 int 前最多 20 位且不大于 18446744073709551615；解码原始 iat/exp 必须 type(x) is int，满足 iat ≤ 当前时间 < exp，不接受 bool/float/字符串。 |
+| 有效期 | access token 默认 60 分钟，可配 30–60 分钟；MVP 不做 refresh 与吊销黑名单（2.4 决策 7）。模块级 app 不读环境，create_app(settings=None) 在 lifespan 构造并校验 Settings；缺少 JWT_SECRET 时启动失败、/healthz 也不可用。07.5a 只构造惰性引擎/Redis 客户端，不连接服务。 |
 | 角色与状态 | token 只作身份标识；每次鉴权按 sub 对应的用户主键查询角色与账号状态，不缓存二者；禁用账号、降权立即生效，不必等 token 过期。未来缓存必须先有压测证据及新 ADR。 |
-| 登录防枚举 | 用户名不存在与密码错误返回同样的信息与相近的耗时；失败次数按 IP + 用户名限制（10.3）。 |
+| 登录防枚举 | 不存在用户名执行一次 dummy 哈希校验，与真实校验共享准入池；错误密码与不存在账号返回同样 401 文案，不声称网络端到端恒定时间。VerifyMismatchError 是凭据不匹配；InvalidHashError 是内部故障（500），其他未知异常也不伪装成错误密码；响应/日志不含密码、哈希或 token，422 不回传原始输入。 |
 | Token 存放 | access token 存浏览器 localStorage（实现简单），以 XSS 防护作为主要缓解；httpOnly Cookie + CSRF Token 方案列入 19.2 备选。 |
 | CORS | 生产环境前后端同源（经 Nginx），无需开放 CORS；开发环境用 Vite 代理，必要时使用白名单。 |
 
