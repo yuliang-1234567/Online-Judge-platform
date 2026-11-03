@@ -1,7 +1,7 @@
-# 认证模块（07.5a / 07.5b）
+# 认证模块（07.5a / 07.5b / 07.6）
 
 ## 职责
-提供注册、登录和当前身份查询，按请求读取账号状态与角色；不实现 refresh、吊销黑名单、找回密码或管理员创建。接口契约见 [设计 §11.2](../project-design.md#112-认证接口)（D:1126–1132）。
+提供注册、登录、当前身份查询及一次性管理员创建命令，按请求读取账号状态与角色；不实现 refresh、吊销黑名单或找回密码。接口契约见 [设计 §11.2](../project-design.md#112-认证接口)（D:1126–1132）。
 
 ## 涉及文件
 | 文件（相对仓库根） | 作用 |
@@ -14,6 +14,7 @@
 | `backend/tests/unit/test_security.py`、`backend/tests/unit/test_auth_service.py`、`backend/tests/unit/test_auth_rate_limit.py`、`backend/tests/unit/test_auth_startup.py` | 机制与故障分支 |
 | `backend/tests/api/test_auth.py`、`backend/tests/api/test_healthz.py` | 真实 HTTP 接线与无连接启动 |
 | `backend/tools/auth_integration.py`、`backend/tests/integration/conftest.py`、`backend/tests/integration/test_auth.py` | 受控隔离资源生命周期、双 owner 门禁及真实认证场景 |
+| `backend/tools/create_admin.py`、`backend/tests/unit/test_create_admin.py` | 管理员命令与离线安全/事务契约 |
 | `deploy/.env.example`、`backend/pyproject.toml`、`backend/uv.lock` | 配置入口与固定依赖；不读取真实凭据作测试 |
 
 ## 调用链
@@ -21,6 +22,7 @@
 2. register：输入校验 → IP 配额 → 线程池哈希 → 短事务内 INSERT/flush/refresh/commit → 公开用户响应。
 3. login：格式校验/归一化失败键 → 短事务查用户 → 真哈希或 dummy 校验 → 失败计数或签发 JWT。
 4. me/权限依赖：验证 token → 以 sub 重新查用户 → 禁用/角色判断 → 响应；请求结束关闭 session。
+5. create_admin：终端双次隐藏输入（非交互才用 OJ_ADMIN_PASSWORD）→ 注册规则校验 → 事务外 Argon2id → 仓储 create_admin 写 ADMIN/ACTIVE → 提交后报告 ID；最终释放连接。
 
 ## 关键决策
 - 用户名 ASCII 3–32（不支持中文），大小写唯一性由既有排序规则负责；密码按 Unicode 码点计数，注册 15–128，不 trim/规范化，避免悄悄改变凭据。见 D:1126–1127、1296。
@@ -34,6 +36,7 @@
 - token 不保存角色/状态；每次查库才能让禁用或降权在下一次请求生效。统一错误体不回传密码输入、哈希或原异常，日志不记录 Authorization/token。见 D:1299、1336。
 
 ## 异常与边界
+- 管理员命令仅 INSERT，不提升或覆盖既有账号；1062 仅提取并精确核对用户名键名，未知键/格式归故障。退出码 0/2/3/70/130 分别为成功、输入配置错误、重名、内部故障、中断；不输出原异常。提交应答丢失需只读核查，不自动重试。
 - 401 使用 UNAUTHENTICATED；重复用户名 409/CONFLICT；禁用/无权限 403/FORBIDDEN；422 仅固定字段提示；429 带重试秒数，数据库 OperationalError/连接池 TimeoutError 返回 503；未识别的程序错误保留 500。见 D:1113–1120。
 - JWT_SECRET 缺失或不足 32 字节时启动报“认证配置错误”，/healthz 也不可用；启动成功不等于依赖可用。测试注入占位 Settings，不依赖环境里的真实凭据。
 - 生产在 backend/ 用 `uv run --locked --offline uvicorn app.main:app --env-file ../deploy/.env` 显式加载配置；模块级 app 不读取 AUTH_INTEGRATION_*。
@@ -57,3 +60,5 @@ uv run --locked --offline pytest -q
 uv run --locked --offline --no-sync python -B tools/auth_integration.py
 ```
 无参数执行完整流程，默认 pytest 不会进入该流程。root 凭据只由入口读取 deploy/.env；测试子进程只收到四项集成配置，fixture 不读真实 .env。脱敏报告位于私有 local-reference/runtime/07.5b/<run_id>/report.json。
+
+07.6 命令使用方式、练习状态及未实测边界见 [07.6 学习记录](../learning/07.6-create-admin.md)；离线替身不能证明该命令的真实并发或数据库回滚。

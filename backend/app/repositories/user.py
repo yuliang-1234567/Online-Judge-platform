@@ -1,3 +1,5 @@
+from typing import Literal
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,8 +22,18 @@ class UserRepository:
     # refresh 再读数据库生成的默认值（如时间列）；三步均不表示事务已经提交。
     # 不能在仓储里 commit，否则服务无法把后续步骤与本次写入作为一个单元回滚。
     async def create(self, username: str, password_hash: str) -> User:
+        return await self._create(username, password_hash, role="USER")
+
+    # 管理员命令使用独立入口；普通注册仍只能进入上面的 USER 路径。
+    async def create_admin(self, username: str, password_hash: str) -> User:
+        return await self._create(username, password_hash, role="ADMIN")
+
+    # 仅复用构造、flush、refresh；角色由两个固定入口决定，事务仍属于调用方。
+    async def _create(
+        self, username: str, password_hash: str, *, role: Literal["USER", "ADMIN"]
+    ) -> User:
         user = User(
-            username=username, password_hash=password_hash, role="USER", status="ACTIVE"
+            username=username, password_hash=password_hash, role=role, status="ACTIVE"
         )
         self.session.add(user)
         await self.session.flush()
