@@ -116,7 +116,20 @@ def install_http_contract(app: FastAPI) -> None:
             {
                 str(e["loc"][-1])
                 for e in exc.errors()
-                if e["loc"] and e["loc"][-1] in {"username", "password"}
+                if e["loc"]
+                and e["type"] != "extra_forbidden"
+                and e["loc"][-1]
+                in {
+                    "username",
+                    "password",
+                    "role",
+                    "status",
+                    "page",
+                    "size",
+                    "cursor",
+                    "limit",
+                    "id",
+                }
             }
         )
         message = "请求参数不合法" + ("：" + "、".join(fields) if fields else "")

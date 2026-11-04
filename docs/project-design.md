@@ -1235,12 +1235,26 @@ code 字段只在详情接口中返回，且只给提交者与管理员；历史
 
 测试点增删改及限制修改：题目存在 QUEUED/RUNNING 提交时拒绝，沿用 409 CONFLICT；提交接收与编辑操作须在事务协调下维持该约束，具体锁定方案由用户在 M1 确认。
 
+M1 当前切片的 PUT /admin/problems/{id} 不接受 time_limit_ms、memory_limit_mb，收到任一字段即返回 422，并说明「07.9 接入在途保护后开放」；不得静默忽略。07.9 落实上述事务保护后再开放限制修改。
+
+07.7 用户权限管理的最后管理员保护（用户确认的补充规则）：
+可能减少有效管理员数量的更新，必须在业务事务内先执行以下锁定读，再锁目标用户行：
+
+```sql
+SELECT id FROM users
+WHERE role = 'ADMIN' AND status = 'ACTIVE'
+ORDER BY id FOR UPDATE;
+```
+
+依据锁定读的当前角色、状态及管理员集合判断；将移除最后一名 ACTIVE ADMIN 时返回 409 CONFLICT。禁止无锁 COUNT，禁止以鉴权阶段缓存的 ORM 属性替代当前值。只锁目标行不能保护两个管理员并发移除不同目标时的跨行不变量。新建管理员、纯晋升、纯激活不主动取得这项集合保护锁，因为不会减少有效管理员；混合更新包含降权或禁用时仍须进入保护路径。正常写锁仍然存在，不承诺集合查询只锁返回记录。
+用户角色/状态修改与管理员审计必须在同一事务提交；保护拒绝或审计写入失败时均不得部分持久化。
+
 | 方法 | 路径 | 用途 |
 | --- | --- | --- |
 | POST | /admin/problems | 创建题目（草稿） |
 | GET | /admin/problems | 题目列表（含草稿与下线） |
 | GET | /admin/problems/{id} | 题目管理详情 |
-| PUT | /admin/problems/{id} | 修改题目；成功后使缓存失效 |
+| PUT | /admin/problems/{id} | 修改题目；M1 无题目缓存，缓存失效 N/A；启用缓存时必须同步落实失效规则 |
 | POST | /admin/problems/{id}/publish | 发布：校验至少 1 个测试点、至少 1 个样例、时间预算在硬上限内 |
 | POST | /admin/problems/{id}/offline | 下线；已有提交保持可见 |
 | GET | /admin/problems/{id}/test-cases | 测试点列表（含隐藏用例内容） |

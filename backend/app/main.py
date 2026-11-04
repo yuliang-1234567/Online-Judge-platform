@@ -8,7 +8,8 @@ from redis.asyncio import Redis
 from redis.asyncio.retry import Retry
 from redis.backoff import NoBackoff
 
-from app.api.v1.auth import router
+from app.api.v1.admin import router as admin_router
+from app.api.v1.auth import router as auth_router
 from app.core.config import Settings
 from app.core.db import create_database
 from app.core.http import install_http_contract
@@ -52,7 +53,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     application = FastAPI(title="OJ Platform", version="0.1.0", lifespan=lifespan)
     install_http_contract(application)
-    application.include_router(router)
+    application.include_router(auth_router)
+    application.include_router(admin_router)
 
     @application.get("/healthz", tags=["operations"])
     async def healthz() -> dict[str, str]:

@@ -1,6 +1,6 @@
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
@@ -39,3 +39,46 @@ class UserRepository:
         await self.session.flush()
         await self.session.refresh(user)
         return user
+
+    async def page(
+        self, *, page: int, size: int, username: str | None
+    ) -> tuple[list[User], int]:
+        filters = []
+        if username:
+            # 搜索按字面子串处理，转义 LIKE 的 %/_，参数继续由驱动绑定。
+            filters.append(User.username.contains(username, autoescape=True))
+        total = await self.session.scalar(select(func.count(User.id)).where(*filters))
+        rows = await self.session.scalars(
+            select(User)
+            .where(*filters)
+            .order_by(User.id.desc())
+            .offset((page - 1) * size)
+            .limit(size)
+        )
+        return list(rows.all()), int(total or 0)
+
+    async def lock_active_admin_ids(self) -> list[int]:
+        # 所有减少有效管理员的事务先执行此锁定读，按 id 升序建立相同锁顺序。
+        # 无 role/status 索引时物理锁范围可能更广；不能把替身验证当作 InnoDB 锁证据。
+        rows = await self.session.scalars(
+            select(User.id)
+            .where(User.role == "ADMIN", User.status == "ACTIVE")
+            .order_by(User.id)
+            .with_for_update()
+        )
+        return list(rows.all())
+
+    async def lock_by_id(self, user_id: int) -> User | None:
+        # 同一请求的鉴权可能已加载此对象；锁定 SQL 必须覆盖 identity map 中的旧值。
+        return await self.session.scalar(
+            select(User)
+            .where(User.id == user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    async def update_access(self, user: User, *, role: str, status: str) -> None:
+        user.role = role
+        user.status = status
+        await self.session.flush()
+        await self.session.refresh(user)
