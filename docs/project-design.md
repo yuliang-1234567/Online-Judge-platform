@@ -1235,7 +1235,13 @@ code 字段只在详情接口中返回，且只给提交者与管理员；历史
 
 测试点增删改及限制修改：题目存在 QUEUED/RUNNING 提交时拒绝，沿用 409 CONFLICT；提交接收与编辑操作须在事务协调下维持该约束，具体锁定方案由用户在 M1 确认。
 
-M1 当前切片的 PUT /admin/problems/{id} 不接受 time_limit_ms、memory_limit_mb，收到任一字段即返回 422，并说明「07.9 接入在途保护后开放」；不得静默忽略。07.9 落实上述事务保护后再开放限制修改。
+07.8 的 PUT /admin/problems/{id} 仅允许修改 DRAFT；题目不存在返回 404，PUBLISHED/OFFLINE 返回 409。事务内先锁定题目行并读取当前状态，再更新业务与标签关联、写审计并共同提交。DRAFT 允许修改 time_limit_ms、memory_limit_mb，两个字段均须为正整数且不超过 4294967295；本节不提供发布、下线或将非草稿回退到 DRAFT 的入口，07.9 接入在途保护前不开放非草稿编辑。
+
+07.8 管理输入补充：slug 完整匹配 [a-z0-9]+(?:-[a-z0-9]+)*，长度 1–64，不自动改写，创建后固定。创建必填 slug/title/description/difficulty，tag_ids 默认空列表，时间/内存限制默认 1000ms/256MB；status、created_by 与时间字段由服务端控制。PUT 全量替换 title、description、difficulty、tag_ids、time_limit_ms、memory_limit_mb 六字段，全部必填；空 tag_ids 清空关联。所有管理输入 extra=forbid，拒绝 null、未知/不可变字段。title 去除首尾空白后为 1–128 字符，description 拒绝空白内容但保留原始 Markdown，difficulty 为 EASY/MEDIUM/HARD。
+
+标签只由管理员通过 POST /admin/tags 显式创建，名称去除首尾空白后为 1–32 字符、允许中文；建题/改题只引用已有 tag_ids，重复 ID 返回 422，不归并、不隐式创建。唯一性由 uk_problems_slug/uk_tags_name 裁定，精确识别的 1062 返回 409；预查后 fk_problem_tags_tag 的 1452 返回 422「标签不存在」，其他约束或不可解析格式走安全内部错误，所有失败共同回滚，不泄露原始 SQL/参数/异常。
+
+题目与标签管理列表采用 page/size（默认 1/20、size≤50），按 id 降序；题目列表不加载完整题面，管理详情不夹带测试数据，响应使用独立白名单和 UTC 毫秒时间。本节 JSON 写入口按实际接收字节限制为 256*1024，超限返回统一 413/PAYLOAD_TOO_LARGE；不得仅信任 Content-Length，不改变全局中间件顺序。
 
 07.7 用户权限管理的最后管理员保护（用户确认的补充规则）：
 可能减少有效管理员数量的更新，必须在业务事务内先执行以下锁定读，再锁目标用户行：

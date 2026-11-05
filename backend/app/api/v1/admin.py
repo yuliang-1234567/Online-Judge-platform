@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path, Query, Request
 
 from app.api.deps import get_admin_service, require_admin
+from app.api.v1.admin_problem import router as problem_router
 from app.models.user import User
 from app.schemas.admin import AuditLogPage, UserPage, UserPatch
 from app.schemas.auth import UserResponse
@@ -50,3 +51,7 @@ async def list_audits(
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> AuditLogPage:
     return await service.list_audits(cursor=cursor, limit=limit)
+
+
+# 子路由沿用本 router 的权限依赖与 /api/v1/admin 前缀。
+router.include_router(problem_router)

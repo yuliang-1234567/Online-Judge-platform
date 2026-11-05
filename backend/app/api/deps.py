@@ -12,9 +12,11 @@ from app.core.http import AppError
 from app.core.security import InvalidAccessToken, decode_access_token
 from app.models.user import User
 from app.repositories.audit_log import AuditLogRepository
+from app.repositories.problem import ProblemRepository, TagRepository
 from app.repositories.user import UserRepository
 from app.services.admin import AdminService
 from app.services.auth import AuthService
+from app.services.problem import ProblemService
 
 # Annotated 保留类型信息，Depends 指定实际提供者；
 # FastAPI 每请求解析依赖并管理 yield 清理。
@@ -38,6 +40,16 @@ def get_auth_service(request: Request, session: Session) -> AuthService:
 # 与鉴权共用请求级 session；服务自行开启业务事务，依赖不提前 begin。
 def get_admin_service(session: Session) -> AdminService:
     return AdminService(session, UserRepository(session), AuditLogRepository(session))
+
+
+# 题目与标签仓储同样共享请求级会话；认证事务结束后由业务服务另开事务。
+def get_problem_service(session: Session) -> ProblemService:
+    return ProblemService(
+        session,
+        ProblemRepository(session),
+        TagRepository(session),
+        AuditLogRepository(session),
+    )
 
 
 # 第一步验证 token 的签名/类型/时效；第二步查询当前用户，删号为 401、禁用为 403。
