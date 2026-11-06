@@ -137,6 +137,10 @@ def install_http_contract(app: FastAPI) -> None:
                     "time_limit_ms",
                     "memory_limit_mb",
                     "name",
+                    "case_index",
+                    "input_data",
+                    "expected_output",
+                    "is_sample",
                 }
             }
         )

@@ -136,6 +136,10 @@ class MemoryProblems:
         self.tx.fault("lock")
         return self.tx.problems.get(key)
 
+    async def has_inflight(self, key):
+        self.tx.fault("inflight")
+        return bool(getattr(self.tx.store, "inflight", {}).get(key))
+
     async def update(self, obj, **values):
         self.tx.fault("update")
         for key, value in values.items():
@@ -298,12 +302,12 @@ async def test_update_locks_draft_and_replaces_limits_and_clears_tags():
     assert result.slug == "old-slug" and result.created_by == 1
     assert (result.time_limit_ms, result.memory_limit_mb) == (1, 4294967295)
     assert result.tags == [] and store.links == {1: []}
-    assert store.events[:3] == ["begin", "lock", "tags"]
+    assert store.events[:4] == ["begin", "lock", "inflight", "tags"]
     assert store.audits[0].action == "UPDATE_PROBLEM"
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("status", ["PUBLISHED", "OFFLINE"])
+@pytest.mark.parametrize("status", ["PUBLISHED"])
 async def test_non_draft_is_409_without_changes(status):
     store = Store()
     obj = problem()

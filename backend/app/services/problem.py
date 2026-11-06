@@ -153,8 +153,15 @@ class ProblemService:
                 problem = await self.problems.lock_by_id(problem_id)
                 if problem is None:
                     raise AppError(404, "NOT_FOUND", "题目不存在")
-                if problem.status != "DRAFT":
-                    raise AppError(409, "CONFLICT", "仅草稿题目允许修改")
+                if problem.status not in {"DRAFT", "OFFLINE"}:
+                    raise AppError(409, "CONFLICT", "题目须下线后再修改")
+                # 六字段 PUT 不等于限制发生变化；以锁定读当前值作比较。
+                limits_changed = (
+                    data.time_limit_ms != problem.time_limit_ms
+                    or data.memory_limit_mb != problem.memory_limit_mb
+                )
+                if limits_changed and await self.problems.has_inflight(problem_id):
+                    raise AppError(409, "CONFLICT", "题目存在在途提交")
                 tags = await self.tags.by_ids(data.tag_ids)
                 if len(tags) != len(data.tag_ids):
                     raise AppError(422, "VALIDATION_ERROR", "标签不存在")

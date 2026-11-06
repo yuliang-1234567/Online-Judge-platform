@@ -1,8 +1,16 @@
 # 请求级仓储只执行查询和 flush；事务、异常转换及审计由服务负责。
-from sqlalchemy import delete, func, select
+from sqlalchemy import Integer, String, column, delete, func, select, table
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.problem import Problem, ProblemTag, Tag
+
+# 仅描述在途查询用列；不额外映射/建立提交模块或表。
+SUBMISSIONS = table(
+    "submissions",
+    column("id", Integer),
+    column("problem_id", Integer),
+    column("status", String),
+)
 
 # 列表不选 MEDIUMTEXT，避免先加载完整题面再在响应中丢弃。
 SUMMARY_COLUMNS = tuple(
@@ -34,6 +42,21 @@ class ProblemRepository:
             .with_for_update()
             .execution_options(populate_existing=True)
         )
+
+    async def has_inflight(self, problem_id: int) -> bool:
+        # 先持有题目行锁，它是协议共同的序列化点；本查询必须是当前读。
+        # RR 且使用 idx_sub_problem_status 时可能锁扫描区间，空结果也可能锁间隙；
+        # 不承诺只锁返回行，实际范围取决于隔离级别及执行计划，不依赖间隙锁保正确。
+        found = await self.session.scalar(
+            select(SUBMISSIONS.c.id)
+            .where(
+                SUBMISSIONS.c.problem_id == problem_id,
+                SUBMISSIONS.c.status.in_(("QUEUED", "RUNNING")),
+            )
+            .limit(1)
+            .with_for_update()
+        )
+        return found is not None
 
     async def page(self, *, page: int, size: int) -> tuple[list, int]:
         total = await self.session.scalar(select(func.count(Problem.id)))

@@ -168,7 +168,7 @@ def test_put_replaces_six_fields_and_preserves_slug(api):
     assert api.store.audits[0].action == "UPDATE_PROBLEM"
 
 
-@pytest.mark.parametrize("state", ["PUBLISHED", "OFFLINE"])
+@pytest.mark.parametrize("state", ["PUBLISHED"])
 def test_put_non_draft_is_409(api, state):
     api.store.problems[1].status = state
     response = api.client.put(

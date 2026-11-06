@@ -925,7 +925,7 @@ CREATE TABLE audit_logs (
 | submissions(user_id, status) | 在途提交数：status IN ('QUEUED','RUNNING') | — | 在途集合极小，计数几乎是常数成本。 |
 | submissions(status, queued_at) | 补偿扫描：长时间停留在 QUEUED 的记录 | — | 在途集合极小，索引依然高效。 |
 | submissions(status, lease_expires_at) | 恢复扫描：lease 已过期的 RUNNING | — | 在途集合极小，索引依然高效。 |
-| submissions(problem_id, status) | 管理端按题目与状态筛选、题目维度统计 | — | — |
+| submissions(problem_id, status) | 题目在途保护的锁定读、管理端筛选及题目维度统计 | — | idx_sub_problem_status；首版迁移已有，本节不新增索引。 |
 | user_problem_stats(user_id, problem_id) | 首次 AC 条件更新；用户通过题数统计 | 联合 PRIMARY KEY | 榜单重建全表扫描 solved=1，低频可接受。 |
 | audit_logs(resource_type, resource_id, id) | 按资源追溯操作记录（游标分页） | — | 前缀定位，按 id 排序。 |
 | audit_logs(user_id, id) | 按管理员查其操作记录（游标分页） | — | — |
@@ -953,7 +953,7 @@ CREATE TABLE audit_logs (
 | 字段 | 上限（初始建议） | 限制手段 |
 | --- | --- | --- |
 | submissions.code | 32 KB | Nginx 请求体限制 + Pydantic 长度校验，两层都要有。 |
-| test_cases.input_data / expected_output | 单点 ≤ 1 MB；每题 ≤ 50 个点 | 管理端接口校验；超大数据改走文件存储（19.2）。 |
+| test_cases.input_data / expected_output | 各 ≤ 1 MiB（1048576 个 UTF-8 字节），单点原始内容合计可达 2 MiB；每题 ≤ 50 个点 | 管理端逐字段校验；整体 JSON 另受 §12.4 的 16 MiB 实际请求体限制。摘要公式与向量见 §11.6，超大数据改走文件存储（19.2）。 |
 | error_message（编译输出） | 2 KB | 写入前截断，并标注已截断。 |
 | stdout_snippet / stderr_snippet | 1 KB / 2 KB | 仅非 ACCEPTED 的样例点保存 stdout；仅 RUNTIME_ERROR 保存 stderr；ACCEPTED 的测试点不保存任何输出。 |
 | 提交列表查询 | — | 显式选列，不读取 code；详情页才读取。 |
@@ -1233,15 +1233,23 @@ code 字段只在详情接口中返回，且只给提交者与管理员；历史
 管理员接口统一放在 /api/v1/admin 下，由同一个依赖项做角色校验，所有写操作都会写入审计日志（指管理员接口的写操作；系统自动动作只写运行日志）。
 
 
-测试点增删改及限制修改：题目存在 QUEUED/RUNNING 提交时拒绝，沿用 409 CONFLICT；提交接收与编辑操作须在事务协调下维持该约束，具体锁定方案由用户在 M1 确认。
+测试点增删改及限制修改：题目存在 QUEUED/RUNNING 提交时拒绝，沿用 409 CONFLICT。07.9 锁协议：所有相关写操作先在业务事务内锁定 problems 的目标行（SELECT ... WHERE id=:problem_id FOR UPDATE）；测试点 PUT/DELETE 可先无锁定位 problem_id，但取得父题目锁后必须锁定重读测试点，不能先锁测试点再等待题目锁。在途检查使用 SELECT id FROM submissions WHERE problem_id=:problem_id AND status IN ('QUEUED','RUNNING') LIMIT 1 FOR UPDATE 的当前读；创建测试点在父锁内当前读本题测试点 ID 集合，校验最多 50 点，不用旧快照 COUNT。业务与审计共同提交，拒绝及任何写入/审计/提交异常均共同回滚。
 
-07.8 的 PUT /admin/problems/{id} 仅允许修改 DRAFT；题目不存在返回 404，PUBLISHED/OFFLINE 返回 409。事务内先锁定题目行并读取当前状态，再更新业务与标签关联、写审计并共同提交。DRAFT 允许修改 time_limit_ms、memory_limit_mb，两个字段均须为正整数且不超过 4294967295；本节不提供发布、下线或将非草稿回退到 DRAFT 的入口，07.9 接入在途保护前不开放非草稿编辑。
+题目行锁是本协议共同的序列化点，不表示数据库只持有这一把锁。在 REPEATABLE READ 且执行计划选用 idx_sub_problem_status 时，在途查询可能锁扫描索引区间，空结果也可能锁间隙；不承诺只锁返回行。实际锁范围取决于隔离级别及执行计划，正确性不依赖间隙锁；本节不新增索引、不改变服务器配置。未来提交接收必须先取得同一题目锁，再检查状态、读取限制、写快照及 QUEUED 记录；这是后续接口的设计约束，不记为本节端到端验收。
+
+07.9 起 PUT /admin/problems/{id} 及测试点写操作允许 DRAFT、OFFLINE；题目不存在返回 404，PUBLISHED 一律 409，须先经 07.10 下线再编辑，以界定已发布题目供后续提交使用的数据变更边界，不承诺历史测试数据版本化。事务内先锁题目并读取当前状态；time_limit_ms、memory_limit_mb 实际变化才检查在途状态，值未变的题面/标签修改允许执行。两个限制仍为正整数且不超过 4294967295。本节没有下线入口，OFFLINE 只由离线替身或后续隔离库人工造数覆盖，非端到端；07.8 当时仅允许 DRAFT 是历史行为，已由本规则取代。
 
 07.8 管理输入补充：slug 完整匹配 [a-z0-9]+(?:-[a-z0-9]+)*，长度 1–64，不自动改写，创建后固定。创建必填 slug/title/description/difficulty，tag_ids 默认空列表，时间/内存限制默认 1000ms/256MB；status、created_by 与时间字段由服务端控制。PUT 全量替换 title、description、difficulty、tag_ids、time_limit_ms、memory_limit_mb 六字段，全部必填；空 tag_ids 清空关联。所有管理输入 extra=forbid，拒绝 null、未知/不可变字段。title 去除首尾空白后为 1–128 字符，description 拒绝空白内容但保留原始 Markdown，difficulty 为 EASY/MEDIUM/HARD。
 
 标签只由管理员通过 POST /admin/tags 显式创建，名称去除首尾空白后为 1–32 字符、允许中文；建题/改题只引用已有 tag_ids，重复 ID 返回 422，不归并、不隐式创建。唯一性由 uk_problems_slug/uk_tags_name 裁定，精确识别的 1062 返回 409；预查后 fk_problem_tags_tag 的 1452 返回 422「标签不存在」，其他约束或不可解析格式走安全内部错误，所有失败共同回滚，不泄露原始 SQL/参数/异常。
 
-题目与标签管理列表采用 page/size（默认 1/20、size≤50），按 id 降序；题目列表不加载完整题面，管理详情不夹带测试数据，响应使用独立白名单和 UTC 毫秒时间。本节 JSON 写入口按实际接收字节限制为 256*1024，超限返回统一 413/PAYLOAD_TOO_LARGE；不得仅信任 Content-Length，不改变全局中间件顺序。
+题目与标签管理列表采用 page/size（默认 1/20、size≤50），按 id 降序；题目列表不加载完整题面，管理详情不夹带测试数据，响应使用独立白名单和 UTC 毫秒时间。题目与标签 JSON 写入口按实际接收字节限制为 256*1024，测试点 JSON 写入口为 16*1024*1024；共享 route class，仅以类属性区分限额，超限返回统一 413/PAYLOAD_TOO_LARGE 和 request_id。不得仅信任 Content-Length，不改变全局中间件顺序。
+
+07.9 测试点契约：GET /admin/problems/{id}/test-cases 采用 page/size（默认 1/20，size≤50），按 case_index、id 升序返回独立管理 DTO，含完整输入/期望输出及服务端元数据；不扩展原题目详情 DTO，不缓存测试数据。POST 成功 201，必填 case_index/input_data/expected_output，is_sample 默认 false；PUT 四字段全量替换，成功 200；DELETE 成功 204、无响应体，历史外键沿用 SET NULL，不重判历史结果。case_index 为严格正整数且≤4294967295，允许空号、不自动重排；同题编号冲突 409，第 51 个测试点 422。is_sample 只收 JSON 布尔值，输入/输出只收有效 UTF-8 字符串，允许空串；字段超限或非法字段/类型/null 为 422，extra=forbid，客户端不可指定归属、派生元数据与时间字段。审计动作为 CREATE_TEST_CASE/UPDATE_TEST_CASE/DELETE_TEST_CASE，仅取 ID、编号、样例标记、大小、哈希等安全摘要，与业务同事务。真实并发、持久化回滚及历史外键效果仍须独立测试数据库验证。
+
+test_cases 元数据由服务端计算，客户端不得指定 input_size、output_size、sha256。设 I、O 分别为 input_data、expected_output 的原始 UTF-8 字节，L8(X) 表示 len(X) 的 8 字节无符号大端编码，则 sha256 = SHA256(L8(I) || I || L8(O) || O) 的 64 位小写十六进制。不裁剪空白或归一化换行，空字符串合法；本节不据此自动去重。DDL 的“便于校验与去重”描述摘要用途，不表示已实现自动去重。
+
+固定向量（生产函数与 OpenSSL 独立复核）：input_data="中\n"、expected_output="OK\n"，input_size=4、output_size=3；参与摘要的 23 字节 hex 为 0000000000000004e4b8ad0a00000000000000034f4b0a；sha256 为 f3fc3a9bea58ac50c6d1ab7fdb7b81c0cce0dffcb05504a1f027fb5ef75e4209。这里的 \n 是一个 LF 字符，不是反斜杠加字母 n。
 
 07.7 用户权限管理的最后管理员保护（用户确认的补充规则）：
 可能减少有效管理员数量的更新，必须在业务事务内先执行以下锁定读，再锁目标用户行：
@@ -1340,7 +1348,7 @@ v1.1 变更｜新增认证与会话细则、测试数据保护、输入与资源
 | 对象 | 限制（初始建议） | 位置 |
 | --- | --- | --- |
 | 普通接口请求体 | ≤ 256 KB | Nginx client_max_body_size（按 location 配置）+ Pydantic |
-| 管理端测试数据上传 | ≤ 16 MB | 仅 /api/v1/admin/ 路径放宽，其他路径保持严格 |
+| 管理端测试数据上传 | ≤ 16 MiB（16777216 个实际接收字节） | 测试点 JSON 写入口使用 16MiB 类属性。题目与标签入口保持 256KiB。部署层 Nginx 待验 |
 | 提交代码 | ≤ 32 KB | Nginx + Pydantic，两层都要有 |
 | 分页大小 | size ≤ 50；limit ≤ 100 | 接口校验 |
 | 并发连接 / 请求频率 | 粗粒度限制 | Nginx limit_conn / limit_req |

@@ -13,10 +13,12 @@ from app.core.security import InvalidAccessToken, decode_access_token
 from app.models.user import User
 from app.repositories.audit_log import AuditLogRepository
 from app.repositories.problem import ProblemRepository, TagRepository
+from app.repositories.test_case import TestCaseRepository
 from app.repositories.user import UserRepository
 from app.services.admin import AdminService
 from app.services.auth import AuthService
 from app.services.problem import ProblemService
+from app.services.test_case import TestCaseService
 
 # Annotated 保留类型信息，Depends 指定实际提供者；
 # FastAPI 每请求解析依赖并管理 yield 清理。
@@ -48,6 +50,16 @@ def get_problem_service(session: Session) -> ProblemService:
         session,
         ProblemRepository(session),
         TagRepository(session),
+        AuditLogRepository(session),
+    )
+
+
+# 测试点与题目仓储共享同一会话；不提前开启事务，也不读部署配置。
+def get_test_case_service(session: Session) -> TestCaseService:
+    return TestCaseService(
+        session,
+        ProblemRepository(session),
+        TestCaseRepository(session),
         AuditLogRepository(session),
     )
 

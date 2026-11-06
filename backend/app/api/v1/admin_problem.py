@@ -26,6 +26,9 @@ class _BodyTooLarge(HTTPException):
 
 
 class ProblemBodyRoute(APIRoute):
+    # 子路由只覆盖限额，复用同一接收计数和统一 413 渲染。
+    body_limit = BODY_LIMIT
+
     def get_route_handler(self):
         handler = super().get_route_handler()
 
@@ -39,7 +42,7 @@ class ProblemBodyRoute(APIRoute):
                 message = await request.receive()
                 if message["type"] == "http.request":
                     received += len(message.get("body", b""))
-                    if received > BODY_LIMIT:
+                    if received > self.body_limit:
                         # FastAPI 在 body 解析层将 HTTPException 原样抛出，
                         # 普通异常则转换为 400（fastapi/routing.py 的
                         # except HTTPException: raise / except Exception 分支）。
