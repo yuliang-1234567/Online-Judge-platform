@@ -1140,6 +1140,18 @@ MVP 不提供服务端登出与 refresh：登出由前端丢弃 token 完成，a
 
 公开接口的可见范围由 2.4 决策 1 决定；若改为“全部需要登录”，只需把权限列改为“用户”。
 
+07.10 列表仅查询 PUBLISHED，page/size 默认 1/20，size≤50，按题目 id 降序。可选 difficulty 为 EASY/MEDIUM/HARD，tag_id 只接受一个正整数标签 ID，q 最多 128 字符，去除首尾空白后仅在 title/slug 中作字面包含搜索，空白视为未筛选。各条件取交集，计数与列表条件一致。详情对非 PUBLISHED 或不存在的题目统一返回 404，公开入口对管理员也使用同一可见范围。
+
+| 公开响应 | 字段白名单 |
+| --- | --- |
+| 分页 | items、page、size、total |
+| 列表单项 | id、slug、title、difficulty、time_limit_ms、memory_limit_mb、tags |
+| 标签 | id、name |
+| 详情 | 列表单项的字段及 description、samples |
+| 样例 | case_index、input_data、expected_output，按 case_index、id 升序 |
+
+详情在同一读取事务内组装。样例由 SQL 限定 is_sample=true 并投影白名单列。M1 缓存失效 N/A，查询类限流并入 M3（10.3、17.1）。
+
 ### 11.4 提交与排行榜接口
 
 | 方法 | 路径 | 用途 | 权限 |
@@ -1237,7 +1249,7 @@ code 字段只在详情接口中返回，且只给提交者与管理员；历史
 
 题目行锁是本协议共同的序列化点，不表示数据库只持有这一把锁。在 REPEATABLE READ 且执行计划选用 idx_sub_problem_status 时，在途查询可能锁扫描索引区间，空结果也可能锁间隙；不承诺只锁返回行。实际锁范围取决于隔离级别及执行计划，正确性不依赖间隙锁；本节不新增索引、不改变服务器配置。未来提交接收必须先取得同一题目锁，再检查状态、读取限制、写快照及 QUEUED 记录；这是后续接口的设计约束，不记为本节端到端验收。
 
-07.9 起 PUT /admin/problems/{id} 及测试点写操作允许 DRAFT、OFFLINE；题目不存在返回 404，PUBLISHED 一律 409，须先经 07.10 下线再编辑，以界定已发布题目供后续提交使用的数据变更边界，不承诺历史测试数据版本化。事务内先锁题目并读取当前状态；time_limit_ms、memory_limit_mb 实际变化才检查在途状态，值未变的题面/标签修改允许执行。两个限制仍为正整数且不超过 4294967295。本节没有下线入口，OFFLINE 只由离线替身或后续隔离库人工造数覆盖，非端到端；07.8 当时仅允许 DRAFT 是历史行为，已由本规则取代。
+07.9 起 PUT /admin/problems/{id} 及测试点写操作允许 DRAFT、OFFLINE；题目不存在返回 404，PUBLISHED 一律 409，须先经 07.10 下线再编辑，以界定已发布题目供后续提交使用的数据变更边界，不承诺历史测试数据版本化。事务内先锁题目并读取当前状态；time_limit_ms、memory_limit_mb 实际变化才检查在途状态，值未变的题面/标签修改允许执行。两个限制仍为正整数且不超过 4294967295。07.10 起由 POST /admin/problems/{id}/offline 产生 OFFLINE，已有提交保持可见。07.8 当时仅允许 DRAFT 是历史行为，已由本规则取代。
 
 07.8 管理输入补充：slug 完整匹配 [a-z0-9]+(?:-[a-z0-9]+)*，长度 1–64，不自动改写，创建后固定。创建必填 slug/title/description/difficulty，tag_ids 默认空列表，时间/内存限制默认 1000ms/256MB；status、created_by 与时间字段由服务端控制。PUT 全量替换 title、description、difficulty、tag_ids、time_limit_ms、memory_limit_mb 六字段，全部必填；空 tag_ids 清空关联。所有管理输入 extra=forbid，拒绝 null、未知/不可变字段。title 去除首尾空白后为 1–128 字符，description 拒绝空白内容但保留原始 Markdown，difficulty 为 EASY/MEDIUM/HARD。
 
@@ -1283,6 +1295,26 @@ ORDER BY id FOR UPDATE;
 | GET | /admin/audit-logs | 审计日志（游标分页） |
 | GET | /admin/stats/queue | 队列长度、在途数量、QUEUED/RUNNING 计数、最老 QUEUED 的等待时长 |
 | POST | /admin/rankings/rebuild | 触发榜单重建（异步，返回 202） |
+
+07.10 发布与下线复用管理员鉴权及题目父锁。成功返回 200，响应仅有 id、status。不存在为 404，非法路径参数为 422。
+
+| 操作 | 当前状态 | 结果 |
+| --- | --- | --- |
+| publish | DRAFT 或 OFFLINE | 校验通过后转 PUBLISHED |
+| publish | PUBLISHED | 409 CONFLICT，题目已发布 |
+| offline | PUBLISHED | 转 OFFLINE |
+| offline | DRAFT 或 OFFLINE | 409 CONFLICT，只有已发布题目可以下线 |
+
+发布在父锁内当前读测试点 ID 和样例标记，按下表顺序检查。时间和内存限制均为正整数且≤4294967295。预算用整数毫秒计算，测试点数 ×（time_limit_ms + 2000）+ 20000，允许等于 180000，参见 §8.4 的公式及任务硬上限。
+
+| 发布失败条件 | 错误码与文案 |
+| --- | --- |
+| 没有测试点 | 409 CONFLICT，发布至少需要一个测试点 |
+| 没有样例 | 409 CONFLICT，发布至少需要一个样例 |
+| 时间或内存限制超出合法范围 | 409 CONFLICT，题目限制不合法，无法发布 |
+| 总预算超过 180000ms | 409 CONFLICT，题目时间预算超过发布上限，请减少测试点或降低时限 |
+
+发布与下线分别记录 PUBLISH_PROBLEM、OFFLINE_PROBLEM。状态变更和审计同事务提交，失败共同回滚。下线保留已有提交及其可见性，在途提交继续按 07.9 协议约束后续编辑。
 
 ### 11.7 运维接口
 

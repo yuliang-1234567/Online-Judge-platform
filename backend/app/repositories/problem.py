@@ -1,5 +1,6 @@
 # 请求级仓储只执行查询和 flush；事务、异常转换及审计由服务负责。
-from sqlalchemy import Integer, String, column, delete, func, select, table
+from sqlalchemy import Integer, String, column, delete, func, or_, select, table
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.problem import Problem, ProblemTag, Tag
@@ -15,6 +16,17 @@ SUBMISSIONS = table(
 # 列表不选 MEDIUMTEXT，避免先加载完整题面再在响应中丢弃。
 SUMMARY_COLUMNS = tuple(
     column for column in Problem.__table__.columns if column.name != "description"
+)
+
+
+# 公开查询独立投影，列表不读取题面和后台元数据。
+PUBLIC_COLUMNS = (
+    Problem.id,
+    Problem.slug,
+    Problem.title,
+    Problem.difficulty,
+    Problem.time_limit_ms,
+    Problem.memory_limit_mb,
 )
 
 
@@ -67,6 +79,61 @@ class ProblemRepository:
             .limit(size)
         )
         return list(rows.mappings().all()), int(total or 0)
+
+    async def set_status(self, problem: Problem, status: str) -> None:
+        # 调用者持有题目行锁，状态与审计由同一事务提交。
+        problem.status = status
+        await self.session.flush()
+
+    async def published_by_id(self, problem_id: int) -> RowMapping | None:
+        rows = await self.session.execute(
+            select(*PUBLIC_COLUMNS, Problem.description).where(
+                Problem.id == problem_id, Problem.status == "PUBLISHED"
+            )
+        )
+        return rows.mappings().one_or_none()
+
+    async def page_published(
+        self,
+        *,
+        page: int,
+        size: int,
+        difficulty: str | None,
+        tag_id: int | None,
+        q: str,
+    ) -> tuple[list[RowMapping], int]:
+        filters = [Problem.status == "PUBLISHED"]
+        if difficulty is not None:
+            filters.append(Problem.difficulty == difficulty)
+        if tag_id is not None:
+            # EXISTS 只筛题目，分页和计数不会随标签关联数膨胀。
+            filters.append(
+                select(ProblemTag.problem_id)
+                .where(ProblemTag.problem_id == Problem.id, ProblemTag.tag_id == tag_id)
+                .exists()
+            )
+        if q:
+            filters.append(
+                or_(
+                    Problem.title.contains(q, autoescape=True),
+                    Problem.slug.contains(q, autoescape=True),
+                )
+            )
+        total = int(
+            await self.session.scalar(select(func.count(Problem.id)).where(*filters))
+            or 0
+        )
+        offset = (page - 1) * size
+        if offset >= total:
+            return [], total
+        rows = await self.session.execute(
+            select(*PUBLIC_COLUMNS)
+            .where(*filters)
+            .order_by(Problem.id.desc())
+            .offset(offset)
+            .limit(size)
+        )
+        return list(rows.mappings().all()), total
 
     async def update(self, problem: Problem, **values) -> None:
         # 显式白名单与服务 DTO 双重约束，不能用任意键覆盖 slug/status/created_by。

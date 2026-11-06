@@ -18,6 +18,7 @@ from app.repositories.user import UserRepository
 from app.services.admin import AdminService
 from app.services.auth import AuthService
 from app.services.problem import ProblemService
+from app.services.problem_publication import ProblemPublicationService
 from app.services.test_case import TestCaseService
 
 # Annotated 保留类型信息，Depends 指定实际提供者；
@@ -59,6 +60,16 @@ def get_test_case_service(session: Session) -> TestCaseService:
     return TestCaseService(
         session,
         ProblemRepository(session),
+        TestCaseRepository(session),
+        AuditLogRepository(session),
+    )
+
+
+def get_problem_publication_service(session: Session) -> ProblemPublicationService:
+    return ProblemPublicationService(
+        session,
+        ProblemRepository(session),
+        TagRepository(session),
         TestCaseRepository(session),
         AuditLogRepository(session),
     )

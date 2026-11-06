@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Path, Query, Request
 
 from app.api.deps import get_admin_service, require_admin
 from app.api.v1.admin_problem import router as problem_router
+from app.api.v1.admin_publication import router as publication_router
 from app.api.v1.admin_test_case import router as test_case_router
 from app.models.user import User
 from app.schemas.admin import AuditLogPage, UserPage, UserPatch
@@ -57,3 +58,4 @@ async def list_audits(
 # 子路由沿用本 router 的权限依赖与 /api/v1/admin 前缀。
 router.include_router(problem_router)
 router.include_router(test_case_router)
+router.include_router(publication_router)

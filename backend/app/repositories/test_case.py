@@ -1,7 +1,9 @@
 # 只查询或 flush；题目锁、数量限制、审计与事务都由服务持有。
 from sqlalchemy import func, select
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.problem import Problem
 from app.models.test_case import TestCase
 
 
@@ -35,6 +37,30 @@ class TestCaseRepository:
                 )
             ).all()
         )
+
+    async def locked_publication_rows(self, problem_id: int) -> list[tuple[int, bool]]:
+        # 发布先锁父题目，再当前读门槛所需列，避免加载测试数据正文。
+        rows = await self.session.execute(
+            select(TestCase.id, TestCase.is_sample)
+            .where(TestCase.problem_id == problem_id)
+            .order_by(TestCase.id)
+            .with_for_update()
+        )
+        return [(case_id, is_sample) for case_id, is_sample in rows.all()]
+
+    async def public_samples(self, problem_id: int) -> list[RowMapping]:
+        # 公开查询在数据库端排除隐藏点，并只读取可公开的样例列。
+        rows = await self.session.execute(
+            select(TestCase.case_index, TestCase.input_data, TestCase.expected_output)
+            .join(Problem, Problem.id == TestCase.problem_id)
+            .where(
+                TestCase.problem_id == problem_id,
+                TestCase.is_sample.is_(True),
+                Problem.status == "PUBLISHED",
+            )
+            .order_by(TestCase.case_index, TestCase.id)
+        )
+        return list(rows.mappings().all())
 
     async def create(self, *, problem_id: int, **values) -> TestCase:
         case = TestCase(problem_id=problem_id, **values)

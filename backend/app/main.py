@@ -10,6 +10,7 @@ from redis.backoff import NoBackoff
 
 from app.api.v1.admin import router as admin_router
 from app.api.v1.auth import router as auth_router
+from app.api.v1.public_problem import router as public_problem_router
 from app.core.config import Settings
 from app.core.db import create_database
 from app.core.http import install_http_contract
@@ -55,6 +56,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     install_http_contract(application)
     application.include_router(auth_router)
     application.include_router(admin_router)
+    application.include_router(public_problem_router)
 
     @application.get("/healthz", tags=["operations"])
     async def healthz() -> dict[str, str]:
