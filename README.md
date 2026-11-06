@@ -21,20 +21,23 @@ Python 后端求职项目，目标是实现题库、异步判题与结果查询�
 | 07.6 | 一次性初始管理员命令与私有练习包 | 默认 353 passed；命令离线 47 项通过；实库未验证；学习待掌握 | 已提交：126a06c / 709aade |
 | 07.7 | 用户权限管理、最后管理员保护与原子审计 | 离线通过；实库并发待验；学习待掌握 | 已提交：91a0071 / 7438f0a |
 | 07.8 | 题目草稿、标签、原子审计与请求体限制 | 离线 566 passed，用户 filled 147/147；实库/Nginx 未验；学习待掌握 | 已提交：c358c77 / 6bb6cea |
-| 07.9 | 测试点管理与在途编辑保护 | 离线 710 passed，实库/Nginx 待验，学习待掌握 | 未提交 |
+| 07.9 | 测试点管理与在途编辑保护 | 离线 710 passed，用户 filled 146/146；实库/Nginx 待验；学习待掌握 | 已提交：04acc0b / 8224a11 |
+| 07.10 | 发布/下线、公开题库与样例白名单 | 离线 751 passed；私有包 reference 41/41、initial 4 项预期红；实库/Nginx 待验；学习待掌握 | 未提交 |
 
 1. 日期依据是 [设计文档 §17.2「重排执行表」](docs/project-design.md#172-重排执行表)；06.5 对应其中「阶段06末尾，限半天」那一行。
 2. 06.x 是阶段06内部的施工编号，设计文档没有这一层编号。07.x 是阶段07内部的施工编号，设计文档同样没有这一层编号。
 3. 06.1—06.3 于 2026-10-19 完成，早于 §17.2 的计划窗口，原因是 Docker 网络问题未阻塞主线；如实记录，不为了对齐计划表而改日期。
 4. 表中哈希在下一个记录类提交回填；一个提交无法包含自身哈希。
 
-当前已实现 `GET /healthz`、`POST /api/v1/auth/register`、`POST /api/v1/auth/login`、`GET /api/v1/auth/me`；认证已通过离线验证及本地隔离 MySQL/Redis 集成验证（07.5b，已复核并提交）。题目草稿、标签与测试点管理已离线实现。发布/下线、公开查询与判题留给后续小节。提交的是 AI 起草源码，用户练习未回移；学习待掌握与代码已交付分别记录，见 [练习包流程](.agents/skills/practice-drill-workflow/SKILL.md)。
+当前已实现 `GET /healthz`、`POST /api/v1/auth/register`、`POST /api/v1/auth/login`、`GET /api/v1/auth/me`；认证已通过离线验证及本地隔离 MySQL/Redis 集成验证（07.5b，已复核并提交）。题目草稿、标签、测试点管理、发布/下线与公开题库已离线实现。判题留给后续小节。提交的是 AI 起草源码，用户练习未回移；学习待掌握与代码已交付分别记录，见 [练习包流程](.agents/skills/practice-drill-workflow/SKILL.md)。
 
 07.7 已实现 `GET /api/v1/admin/users`、`PATCH /api/v1/admin/users/{id}`、`GET /api/v1/admin/audit-logs`；当前离线通过，真实 InnoDB 并发与回滚待验，学习待掌握。入口与边界见 [管理模块](docs/modules/admin.md)及 [07.7 学习记录](docs/learning/07.7-admin-users.md)。
 
 07.8 实现管理员题目四接口与标签两接口，当时仅 DRAFT 可编辑。题目、标签关联与审计共同提交，写入口按实际接收字节限制请求体。2026-11-05 执行方在 backend/ 实测 `PYTHONDONTWRITEBYTECODE=1 uv run --locked --offline --no-sync pytest -q -p no:cacheprovider` 为 566 passed in 7.28s，Ruff/格式检查均退出 0；私有包 reference 147/147 和 initial 16 项预期红属于生成验收，不是用户成绩。真实 MySQL 并发、持久化回滚、排序规则与 Nginx 未验，学习待掌握；见 [题目模块](docs/modules/problem.md)和 [07.8 学习记录](docs/learning/07.8-problem-draft.md)。
 
 07.9 增加测试点管理四接口。DRAFT/OFFLINE 可写，存在在途提交时拒绝测试点写入和实际限制变化。真实锁、回滚及部署验证待做。见 [测试点模块](docs/modules/test_case.md)与 [07.9 学习记录](docs/learning/07.9-test-cases.md)。
+
+07.10 增加管理员发布/下线与匿名题库分页/详情，发布门槛和审计同事务处理，公开详情只返回样例。M1 缓存失效 N/A，查询限流并入 M3。见 [题库模块](docs/modules/problem.md)与 [07.10 学习记录](docs/learning/07.10-public-problems.md)。
 
 `/healthz` 返回 `200` 和 `{"status":"ok"}`，只检查进程存活；应用缺有效认证配置时启动失败，`/healthz` 也不可用。API 启动和存活检查不会建表或验证依赖可用。
 
