@@ -61,4 +61,9 @@ uv run --locked --offline --no-sync python -B tools/auth_integration.py
 ```
 无参数执行完整流程，默认 pytest 不会进入该流程。root 凭据只由入口读取 deploy/.env；测试子进程只收到四项集成配置，fixture 不读真实 .env。脱敏报告位于私有 local-reference/runtime/07.5b/<run_id>/report.json。
 
+M1 验证复用上述入口，以 `--suite m1-access` 或 `--suite m1-problems` 显式选择。
+应用账号按范围授表权限，审计仅 SELECT/INSERT，owner 仅 SELECT；报告增加 suite 字段，
+写入 local-reference/runtime/m1/<suite>/<run_id>/report.json。报告保留开发库实际表数/版本的前后快照及容器后快照，development_unchanged 由快照比较得到。
+submissions 仅 SELECT/INSERT/UPDATE、submission_cases 仅 SELECT/INSERT。实现与实跑状态见 [M1 集成记录](../learning/m1-isolated-integration.md)。
+
 07.6 命令使用方式、练习状态及未实测边界见 [07.6 学习记录](../learning/07.6-create-admin.md)；离线替身不能证明该命令的真实并发或数据库回滚。

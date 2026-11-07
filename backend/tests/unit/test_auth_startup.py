@@ -1518,3 +1518,55 @@ def test_auth_non_utc_management_readback_rejects_before_create(
     assert h.report()["failure"]["category"] == "MANAGEMENT_SESSION_UTC"
     assert not any(event[0] == "CREATE" for event in h.events)
     assert not h.database.exists and not h.database.users and not h.redis.keys
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        (0, None),
+        (1, None),
+        (1, ("another-head",)),
+    ],
+)
+def test_final_report_compares_actual_development_snapshots(
+    auth_lifecycle, monkeypatch, after
+):
+    h = auth_lifecycle
+    snapshots = iter(
+        [
+            h.runner.DevelopmentSnapshot(0, None),
+            h.runner.DevelopmentSnapshot(*after),
+        ]
+    )
+    monkeypatch.setattr(
+        h.runner, "read_development_snapshot", lambda db: next(snapshots)
+    )
+    unchanged = after == (0, None)
+    # 既有收尾契约：失败退出 70，报告 finalization_error 保留具体原因码 65。
+    assert h.run() == (0 if unchanged else 70)
+    report = h.report()
+    assert report["development_before"] == {"table_count": 0, "alembic_version": None}
+    assert report["development_after"] == {
+        "table_count": after[0],
+        "alembic_version": list(after[1]) if after[1] is not None else None,
+    }
+    assert report["development_unchanged"] is unchanged
+    assert report["containers_after"] == report["containers_before"]
+    assert report["cleanup_errors"] == []
+    assert not any(report["inventory_after"].values())
+
+
+def test_final_report_keeps_changed_container_identity(auth_lifecycle, monkeypatch):
+    h = auth_lifecycle
+    snapshots = iter(
+        [
+            {"mysql": "one", "redis": "two"},
+            {"mysql": "changed", "redis": "two"},
+        ]
+    )
+    monkeypatch.setattr(h.runner, "_container_snapshot", lambda: next(snapshots))
+    assert h.run() == 70
+    report = h.report()
+    assert report["development_unchanged"] is True
+    assert report["containers_after"] == {"mysql": "changed", "redis": "two"}
+    assert report["finalization_error"] == 65

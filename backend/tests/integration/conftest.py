@@ -45,3 +45,11 @@ def auth_integration_settings(pytestconfig: pytest.Config):
         return pytestconfig.stash[_SETTINGS]
     except KeyError:
         raise pytest.UsageError("认证集成配置尚未通过收集期门禁") from None
+
+
+@pytest.fixture
+def m1_application(auth_integration_settings):
+    """M1 用例沿用双 owner 门禁；fixture 不读取部署配置。"""
+    from m1_support import live_m1_application
+
+    return lambda case: live_m1_application(auth_integration_settings, case)

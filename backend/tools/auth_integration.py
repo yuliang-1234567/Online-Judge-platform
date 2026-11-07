@@ -1,4 +1,4 @@
-"""07.5b 受控入口：隔离建库、迁移、认证验证、留证及按归属清理。"""
+"""认证与 M1 受控入口：按 suite 隔离验证、留证及按归属清理。"""
 
 # /tmp/oj-auth-check-<uid>.lock 跨 checkout 共享，串行保护固定的 oj_auth_check 库。
 
@@ -47,6 +47,28 @@ CHILD_ENV_KEYS = frozenset(
     }
 )
 
+# 固定用例与表授权，拒绝任意路径/表名进入 argv 或 SQL。
+SUITE_FILES = {
+    "auth": "tests/integration/test_auth.py",
+    "m1-access": "tests/integration/test_admin_and_audit.py",
+    "m1-problems": "tests/integration/test_problem_lifecycle.py",
+}
+APPLICATION_DML = "SELECT, INSERT, UPDATE, DELETE"
+SUITE_TABLES = {
+    "auth": {"users": APPLICATION_DML},
+    "m1-access": {"users": APPLICATION_DML, "audit_logs": "SELECT, INSERT"},
+    "m1-problems": {
+        "users": APPLICATION_DML,
+        "audit_logs": "SELECT, INSERT",
+        "problems": APPLICATION_DML,
+        "tags": APPLICATION_DML,
+        "problem_tags": APPLICATION_DML,
+        "test_cases": APPLICATION_DML,
+        "submissions": "SELECT, INSERT, UPDATE",
+        "submission_cases": "SELECT, INSERT",
+    },
+}
+
 
 class RunnerError(Exception):
     # message 只能由本模块提供固定文案，不能传入带凭据的底层异常正文。
@@ -57,6 +79,20 @@ class RunnerError(Exception):
         self.exit_code = exit_code
         self.driver_code = driver_code
         self.reported = False
+
+
+def suite_test_file(suite: str) -> str:
+    if suite not in SUITE_FILES:
+        raise RunnerError("验证范围无效；原值不回显", 64)
+    return SUITE_FILES[suite]
+
+
+def evidence_directory(state: "RunState") -> Path:
+    suite_test_file(state.suite)
+    base = ROOT / "local-reference/runtime"
+    if state.suite == "auth":
+        return base / "07.5b" / state.run_id
+    return base / "m1" / state.suite / state.run_id
 
 
 class SqlExecutor(Protocol):
@@ -104,6 +140,16 @@ class DevelopmentSnapshot:
     table_count: int
     # None 表示版本表不存在；空元组表示表存在但无版本行，不能混称“未迁移”。
     versions: tuple[str, ...] | None
+
+
+def development_snapshot_values(snapshot: DevelopmentSnapshot) -> dict:
+    # null 是版本表不存在，[] 是存在但无版本行；多版本记录完整保留。
+    return {
+        "table_count": snapshot.table_count,
+        "alembic_version": (
+            list(snapshot.versions) if snapshot.versions is not None else None
+        ),
+    }
 
 
 def _require_isolated_database(database: str) -> None:
@@ -300,14 +346,19 @@ def grant_application_account(
     database: str = DATABASE,
     *,
     host: str = ACCOUNT_HOST,
+    suite: str = "auth",
 ) -> None:
-    # 业务表由迁移创建之后才调用；应用不能修改 owner，也没有任何 DDL 权限。
+    # 迁移后按 suite 授权；审计只读/追加，应用不能改 owner 或执行 DDL。
     _require_isolated_database(database)
+    suite_test_file(suite)
     account = account_literal(run_id, "a", host)
-    _execute(
-        executor,
-        f"GRANT SELECT, INSERT, UPDATE, DELETE ON `oj_auth_check`.`users` TO {account}",
-    )
+    # 造在途数据需应用会话插入，仅 m1-problems 放宽，auth suite 不变。
+    # 提交记录只需插入/改状态，历史明细只需插入；均不授 DELETE，明细也不授 UPDATE。
+    for table_name, privileges in SUITE_TABLES[suite].items():
+        _execute(
+            executor,
+            f"GRANT {privileges} ON `oj_auth_check`.`{table_name}` TO {account}",
+        )
     _execute(
         executor,
         f"GRANT SELECT ON `oj_auth_check`.`__auth_check_owner` TO {account}",
@@ -326,6 +377,7 @@ class RunState:
     run_id: str
     received_signal: int | None = None
     resources_started: bool = False
+    suite: str = "auth"
 
     def check(self):
         if self.received_signal is not None:
@@ -572,6 +624,7 @@ class ChildSupervisor:
     def run_pytest(self, environment: dict[str, str]) -> int:
         # 不透传 traceback 或捕获内容，测试可能在断言中包含连接配置。
         self.state.check()
+        test_file = suite_test_file(self.state.suite)
         if self.child is not None:
             raise RunnerError("本轮子进程尚未回收")
         if validate_child_environment(environment) != self.state.run_id:
@@ -589,7 +642,7 @@ class ChildSupervisor:
                 "-m",
                 "pytest",
                 "--auth-integration",
-                "tests/integration",
+                test_file,
                 "-q",
                 "--maxfail=1",
                 "--tb=no",
@@ -661,7 +714,7 @@ class ChildSupervisor:
 def run_full_flow(
     state: RunState, credentials: ManagementCredentials, supervisor: ChildSupervisor
 ) -> int:
-    # 无参数执行环境准备和真实认证用例，任何错误均走同一收尾路径。
+    # 默认认证八项，显式 suite 选择 M1 用例；错误共用既有收尾路径。
     return first_database_round(state, credentials, supervisor, run_tests=True)
 
 
@@ -690,17 +743,23 @@ class SafeArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
         # argparse 默认会回显未知参数；误把凭据放进 argv 时也不能将其打印。
         self.print_usage(sys.stderr)
-        self.exit(2, "参数无效；仅支持 --help，参数原值不回显\n")
+        self.exit(2, "参数无效；请使用 --help，参数原值不回显\n")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = SafeArgumentParser(
-        description=("07.5b 隔离验证；失败先停止业务并留证，仅清理归属匹配的资源。"),
+        description=("认证/M1 隔离验证；失败先停止业务并留证，仅清理归属匹配的资源。"),
         allow_abbrev=False,
     )
     # --help / 未知参数在读 .env、生成 run_id、取锁之前处理；无 --clear 或子命令。
-    parser.parse_args(argv)
-    state = RunState(uuid.uuid4().hex)
+    parser.add_argument(
+        "--suite",
+        choices=tuple(SUITE_FILES),
+        default="auth",
+        help="默认 auth 保持原八项认证；M1 范围须单独批准实库运行",
+    )
+    options = parser.parse_args(argv)
+    state = RunState(uuid.uuid4().hex, suite=options.suite)
     with signal_handlers(state):
         try:
             with exclusive_lock():
@@ -1123,9 +1182,18 @@ def first_database_round(state, credentials, supervisor, *, run_tests=False) -> 
 
     from sqlalchemy.engine import URL
 
-    directory = ROOT / "local-reference/runtime/07.5b" / state.run_id
+    directory = evidence_directory(state)
     directory.mkdir(parents=True)
-    report = {"run_id": state.run_id, "events": [], "exit_code": 70}
+    report = {
+        "run_id": state.run_id,
+        "suite": state.suite,
+        "events": [],
+        "exit_code": 70,
+        "development_before": None,
+        "development_after": None,
+        "containers_after": None,
+        "development_unchanged": None,
+    }
     database, redis, host, baseline = None, None, None, None
     result = 0
     category = "PREFLIGHT"
@@ -1154,7 +1222,9 @@ def first_database_round(state, credentials, supervisor, *, run_tests=False) -> 
         version = database.query("SELECT VERSION()")[0][0]
         if version != "8.0.46":
             raise RunnerError("服务端版本不符", 65)
-        if read_development_snapshot(database) != DevelopmentSnapshot(0, None):
+        development_before = read_development_snapshot(database)
+        report["development_before"] = development_snapshot_values(development_before)
+        if development_before != DevelopmentSnapshot(0, None):
             raise RunnerError("开发库基线变化", 65)
         host = validate_account_host(
             database.query("SELECT SUBSTRING_INDEX(USER(), '@', -1)")[0][0]
@@ -1206,7 +1276,7 @@ def first_database_round(state, credentials, supervisor, *, run_tests=False) -> 
             raise RunnerError("迁移结构计数不符", 65)
         event("SCHEMA_COUNTS", "tables,columns,unique,foreign", counts)
         category = "GRANT_APPLICATION"
-        grant_application_account(database, state.run_id, host=host)
+        grant_application_account(database, state.run_id, host=host, suite=state.suite)
         event(category, account_name(state.run_id, "a"))
         app_url = URL.create(
             "mysql+asyncmy",
@@ -1250,12 +1320,12 @@ def first_database_round(state, credentials, supervisor, *, run_tests=False) -> 
         verify_server_ownership(environment)
         event(category, "mysql,redis", 1)
         if run_tests:
-            category = "AUTH_TESTS"
+            category = "AUTH_TESTS" if state.suite == "auth" else "M1_TESTS"
             result = supervisor.run_pytest(environment)
             report["tests"] = supervisor.test_summary
-            event(category, "tests/integration", result)
+            event(category, suite_test_file(state.suite), result)
             if result:
-                raise RunnerError("认证实库测试失败；不输出捕获内容", result)
+                raise RunnerError("隔离集成测试失败；不输出捕获内容", result)
         state.check()
     except Exception as error:
         result = getattr(error, "exit_code", 70)
@@ -1272,11 +1342,18 @@ def first_database_round(state, credentials, supervisor, *, run_tests=False) -> 
         try:
             finish_round(state, supervisor, database, redis, host, directory, report)
             if baseline is not None and database is not None:
-                if read_development_snapshot(database) != DevelopmentSnapshot(0, None):
+                report["development_after"] = development_snapshot_values(
+                    read_development_snapshot(database)
+                )
+                if report["development_before"] is not None:
+                    report["development_unchanged"] = (
+                        report["development_before"] == report["development_after"]
+                    )
+                report["containers_after"] = _container_snapshot()
+                if report["development_unchanged"] is False:
                     raise RunnerError("开发库收尾基线不符", 65)
-                if _container_snapshot() != baseline:
+                if report["containers_after"] != baseline:
                     raise RunnerError("容器身份改变", 65)
-                report["development_unchanged"] = True
             if (
                 report.get("cleanup_errors")
                 or any(report.get("inventory_after", {}).values())
