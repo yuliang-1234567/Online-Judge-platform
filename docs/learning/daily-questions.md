@@ -284,3 +284,47 @@
 - 读哪里：`backend/tools/auth_integration.py:850—926`、`backend/tools/auth_integration.py:1141—1152`、`backend/tests/integration/test_auth.py:311—328`、`backend/tests/unit/test_auth_startup.py:1350—1373`、`docs/learning/07.5b-auth-integration.md:29—34`
 - 及格线：三小问结论和代码依据均完整为对；仅一至两小问完整为半对；无完整回答为错。第一问须列全四类会话；第二问须覆盖四种失败；第三问须说明 DBAPI/事务状态关系及三个参数的保护目的，才算该小问完整。
 - [ ] 已答
+
+## 2026-11-07
+
+本节经用户单次明确授权，由 Codex 根据当天已推送的 M1 隔离实库改动拟题并审核，共五题；本次例外不改变文件开头的一般分工。只追加题干与判分标准，不预填答案。源码行号按 `077b011` 核对；每小问须同时给出结论和对应代码依据，才计为完整作答。
+
+### Q1｜增加 suite 后怎样守住授权边界（7 分钟）
+
+- 对应改动：a4a6fb6（suite 选择、按表授权及管理员命令后代环境）
+- 问：① 无参数、m1-access、m1-problems 分别选择哪个测试文件？入口怎样避免把任意用例路径传给 pytest？② 列出 m1-problems 对 audit_logs、submissions、submission_cases 的实际权限，以及 owner 表的权限；与 auth 比较，是否给所有 suite 都增加了这些权限？③ 真实管理员命令后代的环境包含哪些键，数据库 URL 和密码分别来自哪里？它能否从该环境取得 root 或迁移配置，密码是否进入 argv？指出离线回归如何检查这些边界。
+- 读哪里：`backend/tools/auth_integration.py:50—87`、`backend/tools/auth_integration.py:343—365`、`backend/tools/auth_integration.py:624—655`、`backend/tools/auth_integration.py:749—760`、`backend/tests/integration/m1_support.py:18—49`、`backend/tests/unit/test_m1_integration_runner.py:254—291`
+- 及格线：三小问的结论和代码依据均完整为对；仅一至两小问完整为半对；无完整回答为错。第二问须逐表列权限并与 auth 比较；第三问须同时覆盖配置来源、精确键集、argv 和回归断言，不接受只答“已经脱敏”。
+- [ ] 已答
+
+### Q2｜怎样证明最后管理员保护真的发生了并发（8 分钟）
+
+- 对应改动：a4a6fb6（真实事务的集合锁竞争、两种先后顺序及审计核验）
+- 问：① overlap_at_lock 的包装器是否用替身返回值取代了真正的锁查询？按调用顺序说明 original、held、trying、release 各在什么位置起作用。② reverse 参数改变了什么？分别写出两种顺序下两笔请求的响应、目标用户最终状态及各请求对应审计数量，并指出断言。③ 只保留 not done 的等待断言，或让第二笔以死锁/超时结束，能否算本题验证通过？还必须取得哪些结果？
+- 读哪里：`backend/tests/integration/m1_support.py:109—142`、`backend/tests/integration/test_admin_and_audit.py:19—25`、`backend/tests/integration/test_admin_and_audit.py:51—82`、`backend/app/repositories/user.py:60—78`
+- 及格线：三小问的结论和代码依据均完整为对；仅一至两小问完整为半对；无完整回答为错。第一问须区分时序控制与真实 SQL；第二问须覆盖两种顺序及响应、持久化状态、审计三类证据；第三问须说明完整判据，不能把“发生等待”直接当成保护成功。
+- [ ] 已答
+
+### Q3｜真实回滚和提交应答丢失是一回事吗（8 分钟）
+
+- 对应改动：a4a6fb6（管理员、测试点与发布的真实故障回滚）、077b011（故障证据边界）
+- 问：① 管理员修改用例的 audit 与 commit 两种故障分别在什么位置注入？哪些真实写入或 flush 已执行，异常与数据库 COMMIT 的先后关系是什么？② 为什么仅断言 HTTP 500 不够？指出管理员角色/状态、测试点内容、发布状态及审计分别由哪些查询或断言确认没有部分持久化；这些回读是否只检查原 ORM 对象的缓存？③ 若数据库 COMMIT 已成功、但客户端未收到成功应答，上述故障注入是否覆盖这个场景？必须区分哪一个时间边界？
+- 读哪里：`backend/tests/integration/test_admin_and_audit.py:19—25`、`backend/tests/integration/test_admin_and_audit.py:105—145`、`backend/tests/integration/m1_support.py:68—76`、`backend/app/repositories/user.py:80—84`、`backend/app/repositories/audit_log.py:12—34`、`backend/tests/integration/test_problem_lifecycle.py:431—476`、`docs/learning/m1-isolated-integration.md:34—37`
+- 及格线：三小问的结论和代码依据均完整为对；仅一至两小问完整为半对；无完整回答为错。第一问须分别追踪两种注入点；第二问须覆盖题干列出的业务状态及审计回读；第三问须明确故障时点和可证明范围，不接受笼统回答“实库回滚已经测过”。
+- [ ] 已答
+
+### Q4｜容量和在途保护验证到了哪一层（8 分钟）
+
+- 对应改动：a4a6fb6（父题目锁下的容量竞争、手工在途数据及编辑保护）、077b011（非端到端边界）
+- 问：① 已有 49 个测试点时，编号分别为 50、51 的两个新增请求怎样被安排重叠？写出响应及最终点数；与前面重复编号请求的响应比较，它们拒绝的条件是否相同？② 对 QUEUED、RUNNING 两种记录，用例分别尝试哪些测试点操作和题目修改？判断只改题面、实际改变时限、将该提交置终态后再改变时限的结果，并指出拒绝后的业务与审计断言。③ seed_submission 通过什么入口产生在途记录？这些测试能否证明提交接收、限制快照写入和 Worker 判题已经形成端到端闭环，或证明未来提交接收遵守同一父锁协议？
+- 读哪里：`backend/tests/integration/test_problem_lifecycle.py:23—42`、`backend/tests/integration/test_problem_lifecycle.py:74—94`、`backend/tests/integration/test_problem_lifecycle.py:274—318`、`backend/tests/integration/test_problem_lifecycle.py:383—426`、`backend/tests/integration/m1_support.py:109—136`、`docs/learning/m1-isolated-integration.md:34—37`
+- 及格线：三小问的结论和代码依据均完整为对；仅一至两小问完整为半对；无完整回答为错。第一问须区分编号唯一性与总量上限；第二问须覆盖两种在途状态及三种题目修改条件；第三问须说明数据来源和当前测试的证据边界。
+- [ ] 已答
+
+### Q5｜零值、缺失字段与成功退出怎样区分（8 分钟）
+
+- 对应改动：a4a6fb6（开发库/容器前后对照、收尾原因码回归）、077b011（预期零基线与两份报告的证据粒度）
+- 问：① 对比 development_before/after 中 table_count=0、alembic_version=null，alembic_version=[]，以及整个快照尚为 null 三种情况：各表示什么？为什么本轮开发库的零表和空版本值不能直接判为采集失败？② 假定测试全部通过、没有中断且其余收尾正常，开发库前后不符或容器身份改变时，最终能否退出 0？写出进程退出码与报告中保留原因的字段；若清理结果仍有资源残留，又走哪个分支？③ 首次 PREFLIGHT 失败报告和成功的 m1-access 旧报告都缺少某些新字段，能否据此得出相同结论？能否拿 m1-problems 的新字段补证另一 run_id？指出每份记录实际支持的结论。
+- 读哪里：`backend/tools/auth_integration.py:138—152`、`backend/tools/auth_integration.py:1185—1199`、`backend/tools/auth_integration.py:1225—1228`、`backend/tools/auth_integration.py:1340—1383`、`backend/tests/unit/test_auth_startup.py:1523—1572`、`docs/learning/m1-isolated-integration.md:43—56`、`docs/learning/m1-isolated-integration.md:70—77`
+- 及格线：三小问的结论和代码依据均完整为对；仅一至两小问完整为半对；无完整回答为错。第一问须分清三种数据形态；第二问须分别追踪快照变化、身份变化及清理残留，区分进程退出码与具体原因码；第三问须逐份判定，不把未取得字段当作相同结果，也不混用不同 run_id 的证据。
+- [ ] 已答
