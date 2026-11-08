@@ -962,7 +962,7 @@ CREATE TABLE audit_logs (
 
 - Alembic 管理全部表结构；迁移是部署流程中的独立步骤（14.3），不在应用启动时隐式执行。W5-1 的列级新迁移与 schema guard 演进另开小节：保留 0001 首版迁移及其结构来源和验证，不重写 0001；仅改变 idempotency_key 列的排序规则，保留类型、非空及联合唯一约束，不顺手改变整表或 username 的 ai_ci 契约。实施前确认目标服务器支持 utf8mb4_0900_bin，并核查实际列规则、既有 key 数据、尾空格/NO PAD 行为、等价类变化及历史客户端重放兼容性；不假定所有环境均无数据，不自动归一化或回填。回退到 ai_ci 前按其完整等价规则检查冲突，包括大小写变体；遇冲突不自动删记录、改 key 或合并提交。schema guard 保留首版预期，另补新 head 及升降级验证；评估 schema_v1.json、check_db_schema.py 与 test_schema_check.py 的范围、出处和 DDL 指纹，不直接放宽、删除守卫或自动重写首版基线。
 
-- key 比较以 (user_id, idempotency_key) 为作用域，目标列级规则为 utf8mb4_0900_bin；key 原样保存，不做大小写或 Unicode 归一化，不同用户可复用同 key。按 [MySQL 8.0 文档](https://docs.oracle.com/cd/E17952_01/mysql-8.0-en/charset-unicode-sets.html)，utf8mb4_0900_bin 自 8.0.17 提供，和现有 utf8mb4_0900_ai_ci 均为 NO PAD，尾空格参与比较；utf8mb4_bin 为 PAD SPACE，不能作为等价替代。文档依据不代替目标环境验证；允许字符、空白及重复头策略仍待后续（11.4.1）。
+- key 比较以 (user_id, idempotency_key) 为作用域，目标列级规则为 utf8mb4_0900_bin；key 原样保存，不做大小写或 Unicode 归一化，不同用户可复用同 key。按 [MySQL 8.0 文档](https://docs.oracle.com/cd/E17952_01/mysql-8.0-en/charset-unicode-sets.html)，utf8mb4_0900_bin 自 8.0.17 提供，和现有 utf8mb4_0900_ai_ci 均为 NO PAD，尾空格参与比较；utf8mb4_bin 为 PAD SPACE，不能作为等价替代。文档依据不代替目标环境验证；允许字符为 ASCII 字母、数字、下划线、连字符；应用可见空白一律 422；同值/异值重复头及含逗号值一律 422；细节见 11.4.1。
 
 - MVP 不做 submissions 归档与分区，不自动清理幂等 key、不设幂等 TTL；key 随提交记录保留，不构成永久保留承诺。未来归档、删除或限时复用须另做设计；归档与分区触发条件见 19.2。备份与恢复见 14.5；Redis 中的数据全部可由 MySQL 重建，不单独备份。
 
@@ -1189,7 +1189,7 @@ HTTP/1.1 202 Accepted
 }
 ```
 
-- key：Idempotency-Key 必填，长度 16—64 个字符；缺失或长度不合法为 422/VALIDATION_ERROR。允许字符、空白及重复头处理规则待后续，不由列级比较规则推导请求头格式规则。
+- key：Idempotency-Key 必填，长度 16—64 个字符；仅允许 ASCII 字母、数字、下划线、连字符（[A-Za-z0-9_-]），整值匹配；大小写保留原样，不做大小写或 Unicode 归一化；缺失、格式或长度不合法为 422/VALIDATION_ERROR。应用可见值中的空白一律 422；同值/异值重复头及含逗号的值一律 422；实现须用 request.headers.getlist() 检查头基数。网络层可能在应用前剥离字段值两端 OWS；NUL 等非法报文可能由 Uvicorn 直接返回纯文本 400，不能要求统一 422 错误体；应用只承诺保存收到并通过校验的业务值。该字符集是请求头层契约，不由 utf8mb4_0900_bin 反推。
 
 - 幂等：通过 JSON 解析、鉴权、key 格式、请求限流及必需字段/类型护栏后，按 (user_id, idempotency_key) 识别重放；所有重放查询均带 user_id，不跨用户返回 submission_id，不同用户可复用同 key。成功命中返回原 submission_id、202 和 Idempotent-Replayed: true；仅此路径忽略后续请求体差异，不再因题目下线、语言不受支持、代码超长或原 QUEUED 提交占用额度而拒绝。请求体差异被忽略不代表绕过前置护栏。重放 body.status（固定 QUEUED 或读取时当前状态）待后续。
 
