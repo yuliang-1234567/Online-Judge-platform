@@ -257,17 +257,17 @@ v1.1 变更｜提交流程改为“落库事务 → 提交后入队 → claim �
 
 ### 5.1 提交流程
 
-下面的编号与图 2（见本节末尾）一一对应：
+下面的编号沿用图 2（见本节末尾）的步骤编号；图 2 步骤 2 仍为旧校验顺序，且未画出重放分支，图 2 待后续同步。相关语义以本节及 §11.4.1 为准。
 
-1. 浏览器调用 POST /api/v1/submissions，携带 Authorization、Idempotency-Key，请求体包含题目、语言与代码。Nginx 先做请求体大小限制。
+1. 浏览器调用 POST /api/v1/submissions，携带 Authorization、Idempotency-Key，请求体包含题目、语言与代码。整包按实际接收字节做大小保护，超限为 413/PAYLOAD_TOO_LARGE，不得只信任 Content-Length；部署层 Nginx 限制仍须独立验证（12.4）。
 
-2. FastAPI 依次完成：鉴权 → 限流 → 参数校验（题目已发布、语言受支持、代码长度合法）→ 在途提交上限检查。
+2. 完整顺序：JSON 解析（语法错误为 422/VALIDATION_ERROR；其他通用解析异常可能为 400/HTTP_ERROR）→ 鉴权 → key 格式校验（422）→ 提交限流（429）→ 必需字段/类型校验（422）→ 重放查询 → 题目父锁及二次查 key → 新提交业务校验（题目已发布、语言受支持、代码长度合法，失败为 422）→ 在途上限（429）→ 原子写入。整包实际字节超限的 413 保护独立于代码字段校验；命中重放不执行后续新提交校验和写入（11.4.1）。
 
-3. 同一个事务内：写入 submissions（QUEUED，queued_at 为当前时间）；若 (user_id, idempotency_key) 冲突，说明是重放：不再增加任何计数，直接读取并返回已有记录；否则对 user_problem_stats 做 upsert 并 attempts + 1，同时保存本次使用的时间、内存限制快照；COMMIT。提交接收与题目编辑的事务协调方式在 M1 严格级设计中确认。
+3. 鉴权事务先结束，再用独立短读事务按 (user_id, idempotency_key) 查 key；未命中则结束短读事务，以新 Session 开始创建事务。新 Session 可复用物理连接，但不继承旧事务；首条业务数据读取必须是按题目 ID、不过滤 status 的父锁 FOR UPDATE，DRAFT/OFFLINE 仍有父行，随后二次查 key。仍未命中才做业务校验、在途检查，并在同一事务写 submissions（QUEUED、queued_at）、限制快照及 user_problem_stats.attempts + 1 后 COMMIT；接收阶段不增加 submissions.attempts。仅 1062 且目标唯一键为 uk_sub_user_idempotency 才按重放竞争处理，完整回滚后用新事务回读；1213/1205、非目标唯一键或其他约束错误按系统错误处理，不包装为重放。业务拒绝补查仅限已取得父锁的路径：回滚后新事务只查一次，不循环、不等待未来提交、不重复限流。仅“首次 key 未命中 + 题目不存在 + 另一请求随后同用户同 key 创建”保留可能返回 422 的窗口：该路径无对应父行锁、无 INSERT、无 1062，不扩大补查。Session、快照与锁协议详见 11.6；重放不新增提交、不增加用户提交次数或 claim 次数，不覆盖原限制快照和原始 request_id。
 
-4. COMMIT 之后才向 judge 队列投递 submission_id。入队失败只记录日志，不影响响应——记录已持久化，由补偿扫描兜底（8.3）。
+4. 仅新建提交在 COMMIT 确认成功之后向 judge 队列投递 submission_id。入队失败只记录日志，不影响该次创建的成功响应；已持久化但未入队由补偿扫描兜底（8.3）。重放不主动入队，可能需要等待 stale 阈值及后续扫描，阈值不是固定恢复上界。COMMIT 应答不明单独验收，具体应答及确认契约待后续（15.2）。
 
-5. 返回 202 Accepted：{submission_id, status: QUEUED}。
+5. 首次创建成功返回 202 Accepted：{submission_id, status: QUEUED}。成功重放返回原 submission_id、202 和 Idempotent-Replayed: true；重放 body.status 待后续，不由首次创建示例定案。
 
 6. Worker 从 judge 队列取任务（延迟确认，见 8.4）。
 
@@ -549,7 +549,7 @@ v1.1 变更｜幂等拆成四层；新增 lease、attempts 围栏、补偿扫描
 
 | 层 | 要防止什么 | 机制 |
 | --- | --- | --- |
-| 提交请求 | 用户重复点击、网络重试造成多条提交 | Idempotency-Key 必填；(user_id, idempotency_key) 唯一索引兜底；冲突时读取并返回原记录，同一个 key 忽略后续请求体差异。 |
+| 提交请求 | 用户重复点击、网络重试造成多条提交 | Idempotency-Key 必填；所有查询限定 user_id，(user_id, idempotency_key) 唯一索引兜底，不同用户可复用同 key。仅通过前置护栏并识别为重放后忽略请求体差异，返回原 submission_id、202 和 Idempotent-Replayed: true；不新增提交或增加两种 attempts，不覆盖原快照/request_id，不主动入队。短读、父锁后二次查询及目标 1062 回滚后新事务回读见 5.1/11.6。仅“首次 key 未命中 + 题目不存在 + 另一请求随后同用户同 key 创建”保留可能 422 的窗口，无对应父行锁、无 INSERT、无 1062，不扩大 best-effort 补查；其余接口及待后续项见 11.4.1，key 比较与保留见 9.6。 |
 | 任务领取 | broker 重复投递、补偿重复入队造成重复判题 | claim 是 WHERE status='QUEUED' 的条件更新；行数为 0 的 Worker 直接结束。 |
 | 终态写入 | 旧 Worker 复活后覆盖新结果 | finalize 的条件是 status='RUNNING' AND attempts=:我领取时的值；行数为 0 则丢弃结果。 |
 | 排行榜计分 | 同一用户反复 AC 同一题而重复加分 | user_problem_stats 上 WHERE solved=0 的条件更新；受影响行数为 1 才算首次通过；榜单用 ZADD … GT 写入。 |
@@ -624,7 +624,7 @@ UPDATE user_problem_stats
 | rebuild_ranking | 每日低峰 + 管理员触发 | 全量读取 user_problem_stats | 写入临时 key 后 RENAME 原子替换（10.4）。 |
 | refresh_ranking_user | 按需 | 首次 AC 后 ZADD 失败的用户 | 重新计算该用户 score 并 ZADD … GT，带重试。 |
 
-阈值的取舍：　requeue_stale_queued 的阈值必须大于“正常排队时间”，否则队列积压时会产生大量重复消息；重复消息虽然无害（claim 保证只判一次），但会让队列膨胀。enqueue_count 上限用来在“Worker 长时间全部不可用”时让提交体面地失败，而不是永远 QUEUED。
+阈值的取舍：　requeue_stale_queued 的阈值必须大于“正常排队时间”，否则队列积压时会产生大量重复消息；重复消息虽然无害（claim 保证只判一次），但会让队列膨胀。enqueue_count 上限用来在“Worker 长时间全部不可用”时让提交体面地失败，而不是永远 QUEUED。W5-1 明确：已持久化未入队由补偿负责，重放不主动入队，也不刷新 queued_at 或增加 enqueue_count；重放后仍可能等待 stale 阈值。120 s 是初始建议阈值，不是固定恢复上界，实际还受扫描周期、批次、积压及依赖可用性影响；恢复上界交 W5-3 复核。
 
 ### 8.4 Celery 配置基线
 
@@ -675,12 +675,12 @@ Worker 启动参数（初始建议）：celery -A app.tasks.celery_app worker -Q
 | 1 | broker 重复投递同一 submission_id | 第二个 Worker 的 claim 受影响行数为 0 | 直接结束，不重复判题 |
 | 2 | Worker 在容器运行中被 kill -9 | lease 过期 → recover 扫描回到 QUEUED 并重新入队 → 重新判题；原消息在 visibility_timeout 后迟到，claim 失败 | 提交收敛到终态 |
 | 3 | 旧 Worker 因 GC 暂停/网络分区后“复活”并回写 | finalize 的 attempts 围栏不匹配，行数为 0 | 丢弃过期结果并清理容器 |
-| 4 | 提交事务已 COMMIT，但入队失败（Redis 抖动） | 用户已得到 202；阈值后 stale 扫描重新入队 | 提交被补偿，不会永远 QUEUED |
+| 4 | 提交事务已确认 COMMIT，但入队失败（Redis 抖动） | 创建仍返回 202；重放只返回原提交，不主动入队；满足 stale 条件后由扫描补偿 | 与 COMMIT 应答不明分开；stale 阈值不是固定恢复上界 |
 | 5 | 同一用户同时 AC 同一题两次 | solved=0 的条件更新只有一个事务得到行数 1 | 只计一次分、只更新一次榜单 |
 | 6 | 同一用户同时首次 AC 两道不同题 | 两个 ZADD … GT 可能乱序到达 | 较小的分数被忽略，较大的保留 |
 | 7 | Redis 重启且数据丢失（无持久化） | 队列消息丢失；缓存清空；榜单清空；限流计数清零 | QUEUED 被补偿；榜单重建；缓存回源；限流自然恢复 |
 | 8 | MySQL 短暂断开 | 连接池 pool_pre_ping 重连；Worker 把它当作 InfraError 重试；API 返回 503 | 有限次重试后恢复 |
-| 9 | 用户重复点击提交（同一个 Idempotency-Key） | (user_id, idempotency_key) 唯一冲突，读取原记录 | 返回同一个 submission_id |
+| 9 | 同一用户重复或并发提交同一个 Idempotency-Key | 通过前置护栏后查重放；创建竞争仅精确识别 uk_sub_user_idempotency 的 1062，完整回滚后新事务回读（5.1/11.6） | 成功重放返回原 submission_id、202 和重放头；不重复写入、计数或主动入队；题目不存在窗口按 11.4.1 保留 |
 | 10 | Docker daemon 不可用 | 容器创建失败 → InfraError → 退避重试 | attempts 用尽后 FAILED（INFRA_ERROR） |
 
 ## 9. 数据库设计
@@ -821,7 +821,7 @@ CREATE TABLE submission_cases (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
-首版 submissions.language 仅允许 python，提交校验拒绝 cpp 及其他不支持值，OpenAPI 语言枚举与之保持一致。submission_cases.status 仅保存逐测试点终态，不使用 QUEUED、RUNNING、FAILED 或 COMPILE_ERROR；编译失败仅在 submissions.status 记录 COMPILE_ERROR，不生成逐点明细。
+首版 submissions.language 仅允许 python，新提交业务校验拒绝 cpp 及其他不支持值，OpenAPI 语言枚举与之保持一致。submission_cases.status 仅保存逐测试点终态，不使用 QUEUED、RUNNING、FAILED 或 COMPILE_ERROR；编译失败仅在 submissions.status 记录 COMPILE_ERROR，不生成逐点明细。W5-1：上述 DDL 保留为 0001 首版结构来源；目标仅将 idempotency_key 列采用 utf8mb4_0900_bin，原样保存，不做大小写或 Unicode 归一化，列级新迁移另见 9.6。重放不新增 submissions 行，不增加 user_problem_stats.attempts（用户提交次数）或 submissions.attempts（claim 次数），不覆盖原限制快照及原始 request_id；本次请求追踪仍用本次 request_id（14.4）。
 
 #### 9.2.4 user_problem_stats、tags、problem_tags、audit_logs
 
@@ -952,7 +952,7 @@ CREATE TABLE audit_logs (
 
 | 字段 | 上限（初始建议） | 限制手段 |
 | --- | --- | --- |
-| submissions.code | 32 KB | Nginx 请求体限制 + Pydantic 长度校验，两层都要有。 |
+| submissions.code | 32 KB | 应用层代码字段校验失败为 422/VALIDATION_ERROR，置于新提交业务校验阶段；整包按实际接收字节保护，超限为 413/PAYLOAD_TOO_LARGE，不能把代码字段上限与整包上限混用（11.4.1、12.4）。部署层 Nginx 限制另行验证。 |
 | test_cases.input_data / expected_output | 各 ≤ 1 MiB（1048576 个 UTF-8 字节），单点原始内容合计可达 2 MiB；每题 ≤ 50 个点 | 管理端逐字段校验；整体 JSON 另受 §12.4 的 16 MiB 实际请求体限制。摘要公式与向量见 §11.6，超大数据改走文件存储（19.2）。 |
 | error_message（编译输出） | 2 KB | 写入前截断，并标注已截断。 |
 | stdout_snippet / stderr_snippet | 1 KB / 2 KB | 仅非 ACCEPTED 的样例点保存 stdout；仅 RUNTIME_ERROR 保存 stderr；ACCEPTED 的测试点不保存任何输出。 |
@@ -960,11 +960,11 @@ CREATE TABLE audit_logs (
 
 ### 9.6 迁移与数据保留
 
-- Alembic 管理全部表结构；迁移是部署流程中的独立步骤（14.3），不在应用启动时隐式执行。
+- Alembic 管理全部表结构；迁移是部署流程中的独立步骤（14.3），不在应用启动时隐式执行。W5-1 的列级新迁移与 schema guard 演进另开小节：保留 0001 首版迁移及其结构来源和验证，不重写 0001；仅改变 idempotency_key 列的排序规则，保留类型、非空及联合唯一约束，不顺手改变整表或 username 的 ai_ci 契约。实施前确认目标服务器支持 utf8mb4_0900_bin，并核查实际列规则、既有 key 数据、尾空格/NO PAD 行为、等价类变化及历史客户端重放兼容性；不假定所有环境均无数据，不自动归一化或回填。回退到 ai_ci 前按其完整等价规则检查冲突，包括大小写变体；遇冲突不自动删记录、改 key 或合并提交。schema guard 保留首版预期，另补新 head 及升降级验证；评估 schema_v1.json、check_db_schema.py 与 test_schema_check.py 的范围、出处和 DDL 指纹，不直接放宽、删除守卫或自动重写首版基线。
 
-- MVP 不做 submissions 归档与分区；触发条件见 19.2。
+- key 比较以 (user_id, idempotency_key) 为作用域，目标列级规则为 utf8mb4_0900_bin；key 原样保存，不做大小写或 Unicode 归一化，不同用户可复用同 key。按 [MySQL 8.0 文档](https://docs.oracle.com/cd/E17952_01/mysql-8.0-en/charset-unicode-sets.html)，utf8mb4_0900_bin 自 8.0.17 提供，和现有 utf8mb4_0900_ai_ci 均为 NO PAD，尾空格参与比较；utf8mb4_bin 为 PAD SPACE，不能作为等价替代。文档依据不代替目标环境验证；允许字符、空白及重复头策略仍待后续（11.4.1）。
 
-- 备份与恢复见 14.5；Redis 中的数据全部可由 MySQL 重建，不单独备份。
+- MVP 不做 submissions 归档与分区，不自动清理幂等 key、不设幂等 TTL；key 随提交记录保留，不构成永久保留承诺。未来归档、删除或限时复用须另做设计；归档与分区触发条件见 19.2。备份与恢复见 14.5；Redis 中的数据全部可由 MySQL 重建，不单独备份。
 
 ### 9.7 分析只读视图（为项目二预留）
 
@@ -1110,13 +1110,14 @@ v1.1 变更｜接口由 10 个补全到 30 个并按“公开 / 用户 / 管理�
 
 | 状态码 | 错误码示例 | 含义 |
 | --- | --- | --- |
+| 400 | HTTP_ERROR | JSON 语法错误以外的通用请求体解析异常可能由框架返回；不将 JSON 语法错误或 key 格式错误统一改为 400。 |
 | 401 | UNAUTHENTICATED | 未登录、token 无效或过期。 |
 | 403 | FORBIDDEN | 已登录但无权限（如普通用户访问 /admin）；账号被禁用。 |
 | 404 | NOT_FOUND | 资源不存在，或不属于当前用户（刻意不区分）。 |
 | 409 | CONFLICT | 唯一约束冲突（用户名、slug）；题目状态不允许当前操作。 |
-| 413 | PAYLOAD_TOO_LARGE | 请求体超过限制（代码、测试数据）。 |
-| 422 | VALIDATION_ERROR | 参数校验失败（沿用 FastAPI 默认的 422），message 说明字段。 |
-| 429 | RATE_LIMITED / TOO_MANY_INFLIGHT | 触发限流或在途提交上限。 |
+| 413 | PAYLOAD_TOO_LARGE | 整包请求体实际接收字节超过限制；与代码、测试数据的字段级校验区分。 |
+| 422 | VALIDATION_ERROR | JSON 语法错误、必需字段/类型、key 格式及代码字段等校验失败；JSON 语法错误沿用当前 FastAPI 的 RequestValidationError 路径，不统一为 400。message 按安全错误契约说明，不回传原始输入。 |
+| 429 | RATE_LIMITED / TOO_MANY_INFLIGHT | 分别表示请求限流与在途提交上限；带 Retry-After。提交重放仍经过请求限流，命中后不检查或消耗在途额度。 |
 | 503 | SERVICE_UNAVAILABLE | 依赖暂时不可用（数据库、Redis）；可重试。 |
 
 ### 11.2 认证接口
@@ -1178,6 +1179,8 @@ Idempotency-Key: 5b0d7a3e-4c1f-4f6a-9d52-1e8c2a7b9f40     # 必填，16–64 个
 }
 ```
 
+首次创建成功的响应示例（不作为重放 body.status 的定案）：
+
 ```http
 HTTP/1.1 202 Accepted
 {
@@ -1186,11 +1189,19 @@ HTTP/1.1 202 Accepted
 }
 ```
 
-- 幂等：同一用户的同一个 Idempotency-Key 重复提交，返回原来的 submission_id（同样是 202），并带响应头 Idempotent-Replayed: true；请求体差异被忽略，同一个 key 视为同一次提交。
+- key：Idempotency-Key 必填，长度 16—64 个字符；缺失或长度不合法为 422/VALIDATION_ERROR。允许字符、空白及重复头处理规则待后续，不由列级比较规则推导请求头格式规则。
 
-- 校验顺序：鉴权 → 限流 → 参数校验（题目已发布、语言受支持、代码长度）→ 在途上限；对应错误码依次为 401 / 429 / 422 / 429。
+- 幂等：通过 JSON 解析、鉴权、key 格式、请求限流及必需字段/类型护栏后，按 (user_id, idempotency_key) 识别重放；所有重放查询均带 user_id，不跨用户返回 submission_id，不同用户可复用同 key。成功命中返回原 submission_id、202 和 Idempotent-Replayed: true；仅此路径忽略后续请求体差异，不再因题目下线、语言不受支持、代码超长或原 QUEUED 提交占用额度而拒绝。请求体差异被忽略不代表绕过前置护栏。重放 body.status（固定 QUEUED 或读取时当前状态）待后续。
 
-- 404 vs 422：题目不存在或未发布，返回 422 VALIDATION_ERROR（problem_id 字段），不暴露草稿题目的存在。
+- 已知窗口：首次 key 未命中，且请求中的题目不存在，另一请求随后以同一用户、同一 key 创建提交时，本请求仍可能返回 422。该路径无对应父行锁、无 INSERT、无 1062，不进入仅限父锁后的业务拒绝补查；按已批 best-effort 保留，不扩大补查，也不等待未来提交。DRAFT/OFFLINE 则仍有父行，按 ID 锁定后可二次查 key（11.6）。
+
+- 完整顺序：JSON 解析（语法错误 422/VALIDATION_ERROR；其他通用解析异常可能 400/HTTP_ERROR）→ 鉴权 → key 格式（422）→ 请求限流（429/RATE_LIMITED）→ 必需字段/类型（422）→ 短读事务查重放 → 未命中则结束短读，以新 Session 开启创建事务，先锁题目再二次查 key → 仍未命中才做新提交业务校验（题目发布状态、语言支持、代码长度，422）→ 在途上限（429/TOO_MANY_INFLIGHT）→ 原子写入并 COMMIT。整包实际字节超限为 413/PAYLOAD_TOO_LARGE；JSON 解析先于鉴权，必需字段/类型与新提交业务值校验必须分开，不能把普通路由的默认校验时机当作该顺序已实现。
+
+- 限流与在途：重放请求照常经过提交请求限流并计入该次请求计数，可能先收到 429；Redis 不可用沿用 10.3 的提交放行降级。在途上限只针对新建，成功重放既不新增在途记录，也不被自己的原 QUEUED/RUNNING 记录挡住。二次查 key、目标 1062 回读和一次业务拒绝补查不重复计限流；并发下在途仍是 10.3 的软限制。
+
+- 副作用：成功重放不新增 submissions 行，不增加 user_problem_stats.attempts 或 submissions.attempts，不覆盖原限制快照、原始 request_id、queued_at，不增加 enqueue_count，不主动入队。已持久化未入队由补偿负责，可能等待 stale 阈值；阈值不是固定恢复上界（8.3）。事务与有界补查按 11.6，创建与重放日志须可区分（14.4）。
+
+- 404 vs 422：新提交业务校验中，题目不存在或未发布，返回 422/VALIDATION_ERROR（problem_id 字段），不暴露草稿题目的存在；已识别为重放的路径不再执行此项新提交校验。题目不存在时无对应父行，适用上述已知窗口。
 
 #### 11.4.2 GET /submissions/{id}
 
@@ -1247,7 +1258,21 @@ code 字段只在详情接口中返回，且只给提交者与管理员；历史
 
 测试点增删改及限制修改：题目存在 QUEUED/RUNNING 提交时拒绝，沿用 409 CONFLICT。07.9 锁协议：所有相关写操作先在业务事务内锁定 problems 的目标行（SELECT ... WHERE id=:problem_id FOR UPDATE）；测试点 PUT/DELETE 可先无锁定位 problem_id，但取得父题目锁后必须锁定重读测试点，不能先锁测试点再等待题目锁。在途检查使用 SELECT id FROM submissions WHERE problem_id=:problem_id AND status IN ('QUEUED','RUNNING') LIMIT 1 FOR UPDATE 的当前读；创建测试点在父锁内当前读本题测试点 ID 集合，校验最多 50 点，不用旧快照 COUNT。业务与审计共同提交，拒绝及任何写入/审计/提交异常均共同回滚。
 
-题目行锁是本协议共同的序列化点，不表示数据库只持有这一把锁。在 REPEATABLE READ 且执行计划选用 idx_sub_problem_status 时，在途查询可能锁扫描索引区间，空结果也可能锁间隙；不承诺只锁返回行。实际锁范围取决于隔离级别及执行计划，正确性不依赖间隙锁；本节不新增索引、不改变服务器配置。未来提交接收必须先取得同一题目锁，再检查状态、读取限制、写快照及 QUEUED 记录；这是后续接口的设计约束，不记为本节端到端验收。
+题目行锁是本协议共同的序列化点，不表示数据库只持有这一把锁。在 REPEATABLE READ 且执行计划选用 idx_sub_problem_status 时，在途查询可能锁扫描索引区间，空结果也可能锁间隙；不承诺只锁返回行。实际锁范围取决于隔离级别及执行计划，正确性不依赖间隙锁；本节不新增索引、不改变服务器配置。未来提交接收与题目编辑共用同一题目父锁，具体事务协议如下；这是后续提交接口的设计约束，不记为 M1 端到端验收。
+
+W5-1 提交接收的事务与 Session 边界（完整接口顺序见 5.1、11.4.1）：
+
+1. 鉴权查询沿用请求依赖提供的 Session，在鉴权的事务作用域退出后才进入提交接收；后续只传递已取得的 user_id 等标量，不用旧 ORM 对象触发创建事务的隐式读取。快查使用独立 Session/短读事务，按 (user_id, idempotency_key) 查询；命中即按重放返回，未命中也必须结束该短读事务，再用新 Session 开始创建事务。新 Session 可复用池中的物理连接，但旧事务必须结束，不得借用仍有旧事务的连接或继承旧读快照。
+
+2. 创建事务的首条业务数据读取必须是 SELECT ... FROM problems WHERE id=:problem_id FOR UPDATE，不按 status 过滤，不得先做普通一致性读或预先建立一致性快照。DRAFT/OFFLINE 仍有对应父行，可以取得父锁；只有题目不存在时没有对应父行可锁，这不承诺不存在其他数据库锁。取得父锁后，先按同一 user_id/key 二次查询，再判断发布状态、读取限制及进行其余新提交业务校验。
+
+3. 在 REPEATABLE READ 下，父锁是当前读；在此前没有普通一致性读或预建快照的前提下，父锁后的首次普通 key 查询才建立本事务读视图，因此不会沿用鉴权或短读事务的旧快照。等待同一父锁的前序事务已提交后，二次查询可见该已提交记录；不承诺读取建立快照后才提交的其他事务。依据为 MySQL 的[一致性读](https://docs.oracle.com/cd/E17952_01/mysql-8.0-en/innodb-consistent-read.html)与[锁定读](https://docs.oracle.com/cd/E17952_01/mysql-8.0-en/innodb-locking-reads.html)语义。此为实现前提及后续验收点，不代表已完成提交接收实库验证。
+
+4. 二次查 key 仍未命中时，业务校验、在途检查、INSERT submissions、保存限制快照及 user_problem_stats.attempts + 1 在同一创建事务内完成后 COMMIT；不提前增加计数，拒绝和写入异常共同回滚。submissions.attempts 只在 claim 阶段增加；重放不增加两种 attempts，不覆盖原提交快照或原始 request_id。
+
+5. 仅将 1062 且精确匹配目标唯一键 uk_sub_user_idempotency 的错误识别为重放竞争；必须退出失败事务并完成完整回滚，再在新事务中按同一 user_id/key 回读，不能在失败 flush 或旧快照内直接 SELECT。1213（死锁）、1205（锁等待超时）、非目标唯一键或其他约束错误按系统错误处理，不包装为重放；本项不新增具体 HTTP 应答契约。
+
+6. 父锁后的业务拒绝先回滚，再用新事务做一次 best-effort key 补查；仅限已取得父锁的路径，只查一次、不循环、不等待未来提交、不重复计限流。题目不存在时未取得对应父行锁，且无 INSERT、无 1062：首次 key 未命中后，另一请求随后同用户同 key 创建提交，本请求仍可能返回 422，保留此窗口而不扩大补查。DRAFT/OFFLINE 有父行，其父锁后业务拒绝属于上述有界补查范围。
 
 07.9 起 PUT /admin/problems/{id} 及测试点写操作允许 DRAFT、OFFLINE；题目不存在返回 404，PUBLISHED 一律 409，须先经 07.10 下线再编辑，以界定已发布题目供后续提交使用的数据变更边界，不承诺历史测试数据版本化。事务内先锁题目并读取当前状态；time_limit_ms、memory_limit_mb 实际变化才检查在途状态，值未变的题面/标签修改允许执行。两个限制仍为正整数且不超过 4294967295。07.10 起由 POST /admin/problems/{id}/offline 产生 OFFLINE，已有提交保持可见。07.8 当时仅允许 DRAFT 是历史行为，已由本规则取代。
 
@@ -1379,9 +1404,9 @@ v1.1 变更｜新增认证与会话细则、测试数据保护、输入与资源
 
 | 对象 | 限制（初始建议） | 位置 |
 | --- | --- | --- |
-| 普通接口请求体 | ≤ 256 KB | Nginx client_max_body_size（按 location 配置）+ Pydantic |
+| 普通接口请求体 | ≤ 256 KB | 整包按实际接收字节限制，超限为 413/PAYLOAD_TOO_LARGE，不得仅信任 Content-Length；Nginx client_max_body_size 按 location 配置，部署验证待完成；字段/类型校验另行处理 |
 | 管理端测试数据上传 | ≤ 16 MiB（16777216 个实际接收字节） | 测试点 JSON 写入口使用 16MiB 类属性。题目与标签入口保持 256KiB。部署层 Nginx 待验 |
-| 提交代码 | ≤ 32 KB | Nginx + Pydantic，两层都要有 |
+| 提交代码 | ≤ 32 KB | 应用层代码字段校验，失败为 422/VALIDATION_ERROR；重放护栏与新提交业务校验分层见 11.4.1；Nginx 与应用入口的整包字节保护对应 413，不能替代代码字段校验 |
 | 分页大小 | size ≤ 50；limit ≤ 100 | 接口校验 |
 | 并发连接 / 请求频率 | 粗粒度限制 | Nginx limit_conn / limit_req |
 
@@ -1516,13 +1541,13 @@ MVP 允许发布期间短暂停机，不追求零停机发布。
 
 - JSON 日志，固定字段：ts、level、service、request_id、user_id、submission_id、task_id、attempt、event、duration_ms。
 
-- X-Request-ID 中间件把 request_id 放入 contextvars；提交入队时把它放进任务参数，让 API 与 Worker 的日志可以串起来。补偿投递可读取提交保存的追踪 ID；唯一幂等约束使用独立的 idempotency_key，不使用 request_id。
+- X-Request-ID 中间件把 request_id 放入 contextvars；提交入队时把它放进任务参数，让 API 与 Worker 的日志可以串起来。补偿投递可读取提交保存的追踪 ID；唯一幂等约束使用独立的 idempotency_key，不使用 request_id。重放是独立 HTTP 请求，使用本次请求的 request_id 记录追踪，不覆盖原 submissions.request_id；客户端复用合法 request_id 的现有行为保留。后续验收用显式不同的两个 request_id、相同 user_id/key，证明请求追踪独立而提交仍只有一条。
 
 - API 与 Worker 日志分开输出，均可按 submission_id 检索。
 
 | 事件（event） | 产生位置 | 用途 |
 | --- | --- | --- |
-| submission.created | API | 记录创建与幂等重放 |
+| submission.created | API | 创建与幂等重放必须可区分，重放不得被记录为再次新建；关联本次 request_id 与原 submission_id，不把日志计数当作用户提交次数 |
 | task.enqueued / enqueue.compensated | API / 维护任务 | 入队与补偿入队 |
 | task.claimed / task.claim_lost | Worker | 领取成功 / 被他人处理 |
 | container.started / container.finished | Worker | 每个测试点的容器生命周期与耗时 |
@@ -1628,7 +1653,8 @@ v1.1 变更｜新增判题与沙箱样例集、故障演练清单；压测方案
 | --- | --- | --- |
 | Worker 崩溃 | 判题进行中 kill -9 Worker | lease 过期后被接管并重判，最终终态；无孤儿容器遗留超过阈值 |
 | 重复消息 | 手工对同一 submission_id 入队两次 | 只判一次；第二个 Worker 记录 task.claim_lost |
-| 入队失败 | 提交时临时停止 Redis，随后恢复 | 用户得到 202；恢复后 stale 扫描补偿入队 |
+| 入队失败 | 提交时临时停止 Redis，随后恢复 | COMMIT 已确认时创建仍返回 202；重放不主动入队，恢复后 stale 扫描补偿；阈值不是固定恢复上界 |
+| COMMIT 应答不明 | 在提交事务 COMMIT 阶段注入连接中断或应答丢失，独立观察持久化结果及同 key 后续请求 | 分别验收实际已提交、实际未提交、仍无法确认三种情况；不以 M1 的 pre-COMMIT 故障注入替代。具体应答及确认契约待后续，不把结果不明包装为已确认提交或已确认回滚 |
 | Redis 重启并清空 | FLUSHALL 后观察 | 排队中的提交被补偿；榜单可重建；缓存回源 |
 | 榜单漂移 | 手工删除 ZSET | 触发重建后与 MySQL 一致 |
 | MySQL 短断 | 停止 MySQL 10–30 s 再启动 | API 503 后恢复；Worker 重试 |
@@ -2008,7 +2034,7 @@ v1.2 变更｜新增 ADR-013 ～ ADR-016，并在 docs/adr/ 中为这四条各�
 | FR-06 提交历史 | 11.4 GET /submissions | submissions | API 测试：游标分页；EXPLAIN |
 | FR-07 排行榜 | 11.4 /rankings、/rankings/me；11.6 rebuild | user_problem_stats | 并发 AC 测试；重建演练 |
 | FR-08 限流与超时 | 全部接口（10.3） | submissions（在途计数） | 限流脚本单元测试；压测 |
-| FR-09 重试、幂等与恢复 | —（内部） | submissions（attempts、lease） | 故障演练 8 项 |
+| FR-09 重试、幂等与恢复 | —（内部） | submissions（attempts、lease） | 故障演练 9 项（含 COMMIT 应答不明独立验收，具体契约待后续） |
 | FR-10 管理端 | 11.6 | audit_logs 及全部管理表 | API 测试：权限、审计 |
 | FR-11 测试数据保护 | 11.3、11.4、11.5 | test_cases | 非管理员全接口断言；缓存检查 |
 | FR-12 运维可见 | 11.6 stats/queue；11.7 | submissions | 健康检查与日志链路检查 |
