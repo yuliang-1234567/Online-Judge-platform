@@ -265,7 +265,7 @@ v1.1 变更｜提交流程改为“落库事务 → 提交后入队 → claim �
 
 3. 鉴权事务先结束，再用独立短读事务按 (user_id, idempotency_key) 查 key；未命中则结束短读事务，以新 Session 开始创建事务。新 Session 可复用物理连接，但不继承旧事务；首条业务数据读取必须是按题目 ID、不过滤 status 的父锁 FOR UPDATE，DRAFT/OFFLINE 仍有父行，随后二次查 key。仍未命中才做业务校验、在途检查，并在同一事务写 submissions（QUEUED、queued_at）、限制快照及 user_problem_stats.attempts + 1 后 COMMIT；接收阶段不增加 submissions.attempts。仅 1062 且目标唯一键为 uk_sub_user_idempotency 才按重放竞争处理，完整回滚后用新事务回读；1213/1205、非目标唯一键或其他约束错误按系统错误处理，不包装为重放。业务拒绝补查仅限已取得父锁的路径：回滚后新事务只查一次，不循环、不等待未来提交、不重复限流。仅“首次 key 未命中 + 题目不存在 + 另一请求随后同用户同 key 创建”保留可能返回 422 的窗口：该路径无对应父行锁、无 INSERT、无 1062，不扩大补查。Session、快照与锁协议详见 11.6；重放不新增提交、不增加用户提交次数或 claim 次数，不覆盖原限制快照和原始 request_id。
 
-4. 仅新建提交在 COMMIT 确认成功之后向 judge 队列投递 submission_id。入队失败只记录日志，不影响该次创建的成功响应；已持久化但未入队由补偿扫描兜底（8.3）。重放不主动入队，可能需要等待 stale 阈值及后续扫描，阈值不是固定恢复上界。COMMIT 应答不明单独验收，具体应答及确认契约待后续（15.2）。
+4. 仅新建提交在 COMMIT 确认成功之后向 judge 队列投递 submission_id。入队失败只记录日志，不影响该次创建的成功响应；已持久化但未入队由补偿扫描兜底（8.3）。重放不主动入队，可能需要等待 stale 阈值及后续扫描，阈值不是固定恢复上界。COMMIT 阶段发生传输故障、应答丢失或应用自身等待超时，且结果无法确认时，不在本请求内回查、重试写入或主动入队；符合响应条件时尝试 503/SUBMISSION_RESULT_UNKNOWN，完整响应、客户端重试、取消及清理边界见 11.4.1，独立故障验收见 15.2。不把本地异常或 rollback 当作未提交证明。
 
 5. 首次创建成功返回 202 Accepted：{submission_id, status: QUEUED}。成功重放返回原 submission_id、202 和 Idempotent-Replayed: true；重放 body.status 为识别本次重放的那次查询所见状态，不保证响应发出时状态仍未变化；202 含义及读取边界见 11.4.1，客户端确认与轮询见 5.2。
 
@@ -1119,6 +1119,7 @@ v1.1 变更｜接口由 10 个补全到 30 个并按“公开 / 用户 / 管理�
 | 422 | VALIDATION_ERROR | JSON 语法错误、必需字段/类型、key 格式及代码字段等校验失败；JSON 语法错误沿用当前 FastAPI 的 RequestValidationError 路径，不统一为 400。message 按安全错误契约说明，不回传原始输入。 |
 | 429 | RATE_LIMITED / TOO_MANY_INFLIGHT | 分别表示请求限流与在途提交上限；带 Retry-After。提交重放仍经过请求限流，命中后不检查或消耗在途额度。 |
 | 503 | SERVICE_UNAVAILABLE | 依赖暂时不可用（数据库、Redis）；可重试。 |
+| 503 | SUBMISSION_RESULT_UNKNOWN | 提交接收在 COMMIT 阶段无法确认结果；不表示已提交或已回滚，按 11.4.1 的同 key 重试契约处理；不替代 SERVICE_UNAVAILABLE。 |
 
 ### 11.2 认证接口
 
@@ -1157,7 +1158,7 @@ MVP 不提供服务端登出与 refresh：登出由前端丢弃 token 完成，a
 
 | 方法 | 路径 | 用途 | 权限 |
 | --- | --- | --- | --- |
-| POST | /api/v1/submissions | 创建提交并入队；返回 202 | 用户 |
+| POST | /api/v1/submissions | 接收新提交或识别幂等重放；成功返回 202，COMMIT 结果未知按 11.4.1 处理 | 用户 |
 | GET | /api/v1/submissions/{id} | 查看提交状态与结果 | 提交者 / 管理员 |
 | GET | /api/v1/submissions | 个人提交历史（游标分页；problem_id、status 可选） | 用户 |
 | GET | /api/v1/rankings | 排行榜 Top N（limit ≤ 100） | 公开 |
@@ -1202,6 +1203,29 @@ HTTP/1.1 202 Accepted
 - 副作用：成功重放不新增 submissions 行，不增加 user_problem_stats.attempts 或 submissions.attempts，不覆盖原限制快照、原始 request_id、queued_at，不增加 enqueue_count，不主动入队。已持久化未入队由补偿负责，可能等待 stale 阈值；阈值不是固定恢复上界（8.3）。事务与有界补查按 11.6，创建与重放日志须可区分（14.4）。
 
 - 404 vs 422：新提交业务校验中，题目不存在或未发布，返回 422/VALIDATION_ERROR（problem_id 字段），不暴露草稿题目的存在；已识别为重放的路径不再执行此项新提交校验。题目不存在时无对应父行，适用上述已知窗口。
+
+- COMMIT 结果未知：COMMIT 阶段发生传输故障、应答丢失或应用自身等待超时，且本请求无法确认提交结果时，采用结果未知路径；不在本请求内另起确认查询、重试写入或主动入队，不把内部处理记作一次 HTTP 重放。数据库实际提交时，提交行、限制快照及用户提交次数增量以原事务为准；实际未提交则无这些写入，仍未结束时保持未知。既有目标 1062 回读及父锁后一次业务拒绝补查不变，不扩大其范围。
+
+- 结果未知响应：旧资源隔离与清理完成、HTTP 响应尚未开始且通道可用时，尝试返回下例统一 JSON；HTTP 状态为 503，error.code 为 SUBMISSION_RESULT_UNKNOWN，X-Request-ID 与 error.request_id 使用本次请求 ID，Retry-After 为 1 秒。不返回 202、submission_id、status 或 Idempotent-Replayed，不写 submissions.error_code、不改 FAILED，不承诺具体送达时间；消息不得包含原始异常、SQL 或连接信息。
+
+```http
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+X-Request-ID: <本次请求ID>
+Retry-After: 1
+
+{"error":{"code":"SUBMISSION_RESULT_UNKNOWN","message":"提交结果暂无法确认，请使用相同的 Idempotency-Key 和原请求内容重试","request_id":"<本次请求ID>"}}
+```
+
+- 客户端重试：收到该 503 后至少等待 1 秒，以同一用户、同一 Idempotency-Key 和原请求内容最多自动重试一次；后续 HTTP 请求重新经过既有护栏，可能得到 429。仍未知时保留原 key 并提示结果未确认，不自动换 key 或无限重试；后续人工同 key 重试仍按正常协议处理。查询未命中不证明原事务已回滚，仍须遵守父锁、二次查 key 及目标 1062 处理。后续成功识别重放时才返回重放头，status 沿用本节查询所见状态方案，取得提交 ID 后按 5.2、11.4.2 用 GET 确认。
+
+- COMMIT 调用预算：公开 commit() 调用采用 5 秒协作式取消预算，覆盖该调用内部回调、残余 flush、发送 COMMIT、等待应答与内部收尾；不包括此前已发生的连接池等待、建连和业务 flush。预算须作用于实际执行 commit() 的任务，不得只取消被 shield 隔开的外层等待；到期申请取消，不保证 5 秒内退出或返回 503。此数值不是驱动 read_timeout、连接池或整个请求的硬上界。
+
+- 旧资源退出：健康且状态可确认的连接正常 rollback、close；可疑或协议失步连接先 invalidate 再完成本地退出，已 invalidated 的连接只完成余下本地清理；不盲目发送 ROLLBACK、不复用旧 Session，不用 engine.dispose() 或杀数据库连接替代请求级清理。由唯一资源持有方负责退出，不并发清理仍在使用的同一 Session。异常后的 rollback 可能只完成本地清理，也可能对仍活动的事务发送 ROLLBACK；都不能证明先前 COMMIT 未生效，不能撤销已提交结果，也不证明远端事务结束或锁已释放。
+
+- 清理告警：应用清理阶段采用 2 秒超预算告警阈值，只记录告警，不强行归还可疑连接，不承诺 2 秒内清理完成；依赖库在异常到达应用前发生的清理时间也须观测。5 秒加 2 秒不是 7 秒响应承诺；清理长期不结束、事件循环受阻或进程退出时，不承诺最终能够发出 503。
+
+- 取消与响应边界：应用自身 deadline 导致结果未知时，满足上述资源退出与 HTTP 条件才尝试 503；外部 CancelledError 清理后继续传播，不转换为业务 503。若异常逃到 Uvicorn，可能出现纯文本 500 或关闭连接，不属于已批 503 契约。客户端已断开、响应已开始或进程退出时不承诺 503 或送达；进程退出也不承诺应用清理完成。未确认路径不假装已入队，实际落库但未入队由既有补偿处理；远端结果不能由本地取消或清理推断。
 
 #### 11.4.2 GET /submissions/{id}
 
@@ -1268,7 +1292,7 @@ W5-1 提交接收的事务与 Session 边界（完整接口顺序见 5.1、11.4.
 
 3. 在 REPEATABLE READ 下，父锁是当前读；在此前没有普通一致性读或预建快照的前提下，父锁后的首次普通 key 查询才建立本事务读视图，因此不会沿用鉴权或短读事务的旧快照。等待同一父锁的前序事务已提交后，二次查询可见该已提交记录；不承诺读取建立快照后才提交的其他事务。依据为 MySQL 的[一致性读](https://docs.oracle.com/cd/E17952_01/mysql-8.0-en/innodb-consistent-read.html)与[锁定读](https://docs.oracle.com/cd/E17952_01/mysql-8.0-en/innodb-locking-reads.html)语义。此为实现前提及后续验收点，不代表已完成提交接收实库验证。
 
-4. 二次查 key 仍未命中时，业务校验、在途检查、INSERT submissions、保存限制快照及 user_problem_stats.attempts + 1 在同一创建事务内完成后 COMMIT；不提前增加计数，拒绝和写入异常共同回滚。submissions.attempts 只在 claim 阶段增加；重放不增加两种 attempts，不覆盖原提交快照或原始 request_id。
+4. 二次查 key 仍未命中时，业务校验、在途检查、INSERT submissions、保存限制快照及 user_problem_stats.attempts + 1 在同一创建事务内完成后 COMMIT；不提前增加计数。业务拒绝及可确认未提交的写入失败按既有事务协议回滚；COMMIT 阶段结果无法确认时按 11.4.1 退出资源，不将异常或 rollback 解释为已确认回滚。数据库实际提交则保留该事务的原子写入，实际未提交则无这些写入，仍未结束时保持未知。submissions.attempts 只在 claim 阶段增加；重放不增加两种 attempts，不覆盖原提交快照或原始 request_id。
 
 5. 仅将 1062 且精确匹配目标唯一键 uk_sub_user_idempotency 的错误识别为重放竞争；必须退出失败事务并完成完整回滚，再在新事务中按同一 user_id/key 回读，不能在失败 flush 或旧快照内直接 SELECT。1213（死锁）、1205（锁等待超时）、非目标唯一键或其他约束错误按系统错误处理，不包装为重放；本项不新增具体 HTTP 应答契约。
 
@@ -1541,13 +1565,15 @@ MVP 允许发布期间短暂停机，不追求零停机发布。
 
 - JSON 日志，固定字段：ts、level、service、request_id、user_id、submission_id、task_id、attempt、event、duration_ms。
 
-- X-Request-ID 中间件把 request_id 放入 contextvars；提交入队时把它放进任务参数，让 API 与 Worker 的日志可以串起来。补偿投递可读取提交保存的追踪 ID；唯一幂等约束使用独立的 idempotency_key，不使用 request_id。重放是独立 HTTP 请求，使用本次请求的 request_id 记录追踪，不覆盖原 submissions.request_id；客户端复用合法 request_id 的现有行为保留。后续验收用显式不同的两个 request_id、相同 user_id/key，证明请求追踪独立而提交仍只有一条。
+- X-Request-ID 中间件把 request_id 放入 contextvars；提交入队时把它放进任务参数，让 API 与 Worker 的日志可以串起来。补偿投递可读取提交保存的追踪 ID；唯一幂等约束使用独立的 idempotency_key，不使用 request_id。重放是独立 HTTP 请求，使用本次请求的 request_id 记录追踪，不覆盖原 submissions.request_id；客户端复用合法 request_id 的现有行为保留。后续验收用显式不同的两个 request_id、相同 user_id/key，证明请求追踪独立而提交仍只有一条。结果未知的 503 错误体、响应头与运行日志均使用本次请求的 request_id，不覆盖原 submissions.request_id；内部清理不是新的 HTTP 请求，也不是一次成功重放。日志缺失或本地已分配的 submission_id 均不能作为数据库已回滚或已提交的证明。
 
 - API 与 Worker 日志分开输出，均可按 submission_id 检索。
 
 | 事件（event） | 产生位置 | 用途 |
 | --- | --- | --- |
-| submission.created | API | 创建与幂等重放必须可区分，重放不得被记录为再次新建；关联本次 request_id 与原 submission_id，不把日志计数当作用户提交次数 |
+| submission.created | API | 仅记录本请求已确认 COMMIT 的新建；成功重放不得记录为再次新建，COMMIT 结果未知不得记录为已确认创建；关联本次 request_id 与 submission_id，不把日志计数当作用户提交次数，日志缺失也不证明未提交 |
+| submission.result_unknown | API | 记录本次请求的 COMMIT 结果未确认；不是创建、重放或判题失败事件；不据本地已分配 ID 宣称持久化成功 |
+| submission.cleanup_slow | API | 应用旧资源清理超过 2 秒时告警；不据此强行归还连接或宣称远端回滚、锁释放 |
 | task.enqueued / enqueue.compensated | API / 维护任务 | 入队与补偿入队 |
 | task.claimed / task.claim_lost | Worker | 领取成功 / 被他人处理 |
 | container.started / container.finished | Worker | 每个测试点的容器生命周期与耗时 |
@@ -1558,6 +1584,8 @@ MVP 允许发布期间短暂停机，不追求零停机发布。
 #### 耗时与队列指标
 
 - 排队耗时 = started_at − queued_at；判题耗时 = finished_at − started_at；端到端时延 = finished_at − created_at。三者都能从 MySQL 的三个时间点直接算出，压测报告据此区分。
+
+- 另行观测公开 commit() 调用总耗时、发起取消至调用退出耗时、应用清理耗时及依赖库在异常传出前的清理；区分此前池等待、建连和业务 flush，不将 5 秒取消预算与 2 秒告警阈值相加为响应时限。
 
 - GET /admin/stats/queue 返回队列长度（LLEN judge）、QUEUED / RUNNING 计数与最老 QUEUED 的等待时长，管理端展示为一个简单面板。
 
@@ -1654,7 +1682,11 @@ v1.1 变更｜新增判题与沙箱样例集、故障演练清单；压测方案
 | Worker 崩溃 | 判题进行中 kill -9 Worker | lease 过期后被接管并重判，最终终态；无孤儿容器遗留超过阈值 |
 | 重复消息 | 手工对同一 submission_id 入队两次 | 只判一次；第二个 Worker 记录 task.claim_lost |
 | 入队失败 | 提交时临时停止 Redis，随后恢复 | COMMIT 已确认时创建仍返回 202；重放不主动入队，恢复后 stale 扫描补偿；阈值不是固定恢复上界 |
-| COMMIT 应答不明 | 在提交事务 COMMIT 阶段注入连接中断或应答丢失，独立观察持久化结果及同 key 后续请求 | 分别验收实际已提交、实际未提交、仍无法确认三种情况；不以 M1 的 pre-COMMIT 故障注入替代。具体应答及确认契约待后续，不把结果不明包装为已确认提交或已确认回滚 |
+| COMMIT 应答不明 | 在 COMMIT 阶段注入传输故障或应答丢失，独立观察数据库结果及同 key 后续请求 | 分别覆盖实际已提交、实际未提交、仍未结束或无法确认；API 未确认且满足响应条件时尝试规定的 503 body/headers，无 ID、202、重放头。验证无内部回查或主动投递，同 key 后续请求不重复创建或增加提交次数，成功重放沿用方案 B；不以 M1 pre-COMMIT 注入替代 |
+| commit() 等待与取消 | 在发送或等待应答阶段制造阻塞，并覆盖内部回调、残余 flush 等阶段 | 5 秒仅申请协作式取消；按证据区分已知失败与结果未知，分别观察调用退出、清理及 HTTP 条件，不断言 5 秒或 7 秒内收到 503 |
+| 异常清理与连接复用 | 覆盖健康、可疑、已失效连接及清理超过 2 秒 | 按 11.4.1 退出资源；超阈值告警，不强行归还连接、不复用旧 Session；本地退出不证明远端回滚或锁释放 |
+| 外部取消 | 从应用 deadline 之外取消请求任务 | 清理后继续传播 CancelledError，不转换为业务 503；Uvicorn 可能的纯文本 500 或关连接不记为已批 503 JSON |
+| 客户端断开或进程退出 | 分别在 COMMIT 发送、等待应答、确认成功后响应发送及清理阶段制造断开或退出 | 不承诺 503、送达或退出时清理完成；COMMIT 已确认时沿用正常投递责任，未确认时不主动投递；独立核对数据库结果，同 key 后续请求和补偿规则不变 |
 | Redis 重启并清空 | FLUSHALL 后观察 | 排队中的提交被补偿；榜单可重建；缓存回源 |
 | 榜单漂移 | 手工删除 ZSET | 触发重建后与 MySQL 一致 |
 | MySQL 短断 | 停止 MySQL 10–30 s 再启动 | API 503 后恢复；Worker 重试 |
@@ -1665,7 +1697,7 @@ v1.1 变更｜新增判题与沙箱样例集、故障演练清单；压测方案
 
 ### 15.3 压测方案
 
-先区分口径：　“提交接口延迟”只包含入队（落库 + 入队 + 返回 202）；“端到端时延”包含排队时间 + 判题时间。二者混在一起报告，数字就没有意义。
+先区分口径：“提交接口延迟”指一次提交接收或重放 HTTP 请求的实际耗时；首次创建成功路径包括落库、提交后投递尝试和返回 202，成功重放不包含新建或主动投递。结果未知 503、取消或断连按实际结局分别报告，不混写成成功 202 耗时；“端到端时延”包含排队时间与判题时间。5 秒 commit() 协作式取消预算及 2 秒清理告警阈值都不是提交接口延迟上界。
 
 #### 场景
 
@@ -2034,7 +2066,7 @@ v1.2 变更｜新增 ADR-013 ～ ADR-016，并在 docs/adr/ 中为这四条各�
 | FR-06 提交历史 | 11.4 GET /submissions | submissions | API 测试：游标分页；EXPLAIN |
 | FR-07 排行榜 | 11.4 /rankings、/rankings/me；11.6 rebuild | user_problem_stats | 并发 AC 测试；重建演练 |
 | FR-08 限流与超时 | 全部接口（10.3） | submissions（在途计数） | 限流脚本单元测试；压测 |
-| FR-09 重试、幂等与恢复 | —（内部） | submissions（attempts、lease） | 故障演练 9 项（含 COMMIT 应答不明独立验收，具体契约待后续） |
+| FR-09 重试、幂等与恢复 | 11.4.1；内部恢复链路 | submissions（attempts、lease） | 故障演练 13 项；包含 COMMIT 结果未知、503 契约、协作式取消、资源清理及断连/退出，按 15.2 独立验收 |
 | FR-10 管理端 | 11.6 | audit_logs 及全部管理表 | API 测试：权限、审计 |
 | FR-11 测试数据保护 | 11.3、11.4、11.5 | test_cases | 非管理员全接口断言；缓存检查 |
 | FR-12 运维可见 | 11.6 stats/queue；11.7 | submissions | 健康检查与日志链路检查 |
