@@ -59,9 +59,9 @@ v1.2 维护约定：docs/project-design.md 是仓库内持续维护的设计主�
 | 术语 | 含义 |
 | --- | --- |
 | Verdict | 一次提交的最终判题结论，即状态机中的终态（ACCEPTED、WRONG_ANSWER 等）。 |
-| claim（领取） | Worker 用一条带前置条件的 UPDATE，把提交从 QUEUED 改为 RUNNING；受影响行数为 1 的 Worker 才拥有这次判题。 |
-| lease（租约） | Worker 持有判题权的有效期，存放在 submissions.lease_expires_at；Worker 判题期间不断续租，崩溃后租约过期，扫描器据此接管。 |
-| 围栏（fencing） | 回写结果时用 attempts 作为条件，保证“已被接管的旧 Worker”无法覆盖新结果。 |
+| claim（领取） | Worker 在独立短事务内锁定提交行并条件更新 QUEUED → RUNNING，取得本次 attempts、worker_id 和 lease；只有更新命中且 COMMIT 已确认后才能执行，协议见 8.1。 |
+| lease（租约） | Worker 的有效判题资格，存放在 submissions.lease_expires_at；到期即失权，资格以锁行后另取的数据库时间判定。初始采用 60 s 租约、10 s 独立周期心跳；不是响应或恢复硬上界（8.1、8.3）。 |
+| 围栏（fencing） | Worker 的业务写入同时检查当前 RUNNING、领取时的 attempts/worker_id 与有效租约，防止无资格的旧执行写入；不承诺故障时沙箱绝不重叠或立即停止。 |
 | 首次 AC | 某用户第一次通过某道题。排行榜只对“首次 AC”计分，由 user_problem_stats 上的条件更新判定。 |
 | 在途提交 | 状态为 QUEUED 或 RUNNING 的提交。每个用户的在途数量有上限，用于防止队列被单个用户灌满。 |
 | 补偿扫描 | Celery Beat 定时执行的维护任务：把卡在 QUEUED 的提交重新入队、接管租约过期的 RUNNING 提交、回收孤儿容器。 |
@@ -271,17 +271,17 @@ v1.1 变更｜提交流程改为“落库事务 → 提交后入队 → claim �
 
 6. Worker 从 judge 队列取任务（延迟确认，见 8.4）。
 
-7. claim：条件更新 QUEUED → RUNNING，同时写入 attempts + 1、worker_id、lease_expires_at；受影响行数为 0 说明已被他人处理或已是终态，任务直接结束。
+7. claim：在独立短事务内按提交 ID 锁行，锁后另取数据库时间，再条件更新 QUEUED → RUNNING，同时写入 attempts + 1、worker_id、lease_expires_at；同事务取得自己的新代次，确认 COMMIT 后才执行。条件不匹配则退出；异常或提交未知不得当作领取成功（8.1）。
 
 8. 读取题目与测试数据，运行限制使用该提交保存的快照；需要编译则先在受限容器内编译；然后每个测试点启动一个新容器，运行、等待、取输出（期望输出不进入容器）。
 
-9. Worker 侧按 7.3 的规则比对；遇到第一个非 AC 的测试点即停止；每个测试点结束后续租。
+9. Worker 侧按 7.3 的规则比对；遇到第一个非 AC 的测试点即停止。领取确认后以独立 Session/短事务进行周期心跳，覆盖准备、编译、长测试点与结果整理；初始租约 60 s、心跳 10 s，不再仅依赖测试点结束续租。
 
-10. finalize（一个事务）：条件更新 RUNNING → 终态（以 attempts 作围栏）→ 写 submission_cases → 若为 AC，条件更新 user_problem_stats.solved；COMMIT。
+10. finalize（一个事务）：先收束心跳，锁提交行后另取数据库时间，检查 RUNNING、领取代次、所有者和有效租约；资格匹配才条件写终态 → 写 submission_cases → 若为 AC，条件更新 user_problem_stats.solved；确认 COMMIT 后才声明终态成功。资格拒绝或无法确认时当前执行退让，不盲目回写。
 
 11. 若本次是该用户对该题的首次 AC：事务提交后重新计算 score，ZADD … GT 更新排行榜；失败则登记一次榜单刷新任务（10.4）。
 
-12. finally：无论成功、失败、超时，都删除容器与临时目录。
+12. finally：无论成功、失败、超时，都尽力停止并清理本执行代次的容器与临时目录，不得删除后继执行资源；进程失联或退出时不保证即时清理，由 7.5 兜底，具体代次资源隔离交 W5-4。
 
 13. 浏览器轮询 GET /api/v1/submissions/{id}（退避策略见 5.2）。
 
@@ -310,7 +310,7 @@ v1.1 变更｜提交流程改为“落库事务 → 提交后入队 → claim �
 | 状态 | 含义 | 允许的下一状态 |
 | --- | --- | --- |
 | QUEUED | 已持久化，等待领取或再次领取；不保证 broker 已收到任务（包括重试或恢复后回到本状态） | RUNNING；FAILED（反复补偿仍无人领取、补偿入队耗尽，ENQUEUE_EXHAUSTED） |
-| RUNNING | 某个 Worker 已 claim，且 lease 未过期 | 任一判题终态；QUEUED（可重试错误，或 lease 过期且 attempts 未达上限）；FAILED（重试用尽或不可重试的系统错误） |
+| RUNNING | 已被领取且尚未终结，包括租约过期待回收；状态本身不证明仍有有效持有人，Worker 写入须通过 8.1 的锁内资格判定 | 任一判题终态；QUEUED（可重试错误，或 lease 过期且 attempts 未达上限）；FAILED（重试用尽或不可重试的系统错误） |
 | ACCEPTED | 全部测试点通过 | 终态 |
 | WRONG_ANSWER | 某个测试点输出不一致 | 终态 |
 | COMPILE_ERROR | 编译失败（含编译超时、编译输出超限） | 终态 |
@@ -355,7 +355,7 @@ v1.1 变更｜模块改为独立小节（便于引用）；新增“判题执行
 
 | 职责 | 入队、claim、续租、finalize、重试与状态重置。 |
 | --- | --- |
-| 设计要点 | 把 8.1–8.3 的规则封装成少量带条件的函数：claim()、renew_lease()、finalize()、reset_for_retry()、mark_failed()。每个函数返回“是否成功”，调用方据此决定是否继续。 |
+| 设计要点 | 把 8.1–8.3 的规则封装为 claim()、renew_lease()、finalize()、reset_for_retry()、mark_failed()。claim 成功须交付本事务取得的领取凭证；条件操作的布尔结果仅表示已确认成功或条件不匹配，数据库异常、COMMIT 结果未知单独传播，不能折叠为条件拒绝或继续执行；当前执行按 8.1 退让。 |
 | 边界 | 不关心容器怎么跑；通过接口调用判题执行器，因此可以用假的执行器写单元测试。 |
 
 ### 6.5 判题执行器（judge/）
@@ -369,7 +369,7 @@ v1.1 变更｜模块改为独立小节（便于引用）；新增“判题执行
 
 | 职责 | Celery 任务的薄封装：取任务 → claim → 调用执行器 → finalize → 清理。 |
 | --- | --- |
-| 设计要点 | 任务函数里不写业务规则；finally 保证清理；异常按“可重试 / 不可重试”分类处理（8.2）。 |
+| 设计要点 | 任务函数里不写业务规则；调度层协调独立心跳与执行器停止，finally 尽力清理本代资源。异常按 8.2 分类；资格拒绝或无法确认时停止当前执行，不盲目重写或主动恢复，不把 API 的 503 契约套用于 Worker。 |
 | 边界 | Worker 必须能够安全回收容器与临时文件；它是可信组件，但不对外暴露任何端口。 |
 
 ### 6.7 排行榜（ranking）
@@ -512,11 +512,11 @@ Comparator 核心实现留到对应小节，由用户按该规则编写；本次
 
 - 通过 exit_code、OOM 标志与统计文件采集：退出码、运行时间、峰值内存、stdout、stderr（均截断）。
 
-- 每个测试点结束后续租（renew_lease）；若续租失败（行数为 0），说明本 Worker 已被接管，立即中止并清理，不写任何结果。
+- 领取确认后进行独立周期心跳：初始租约 60 s、周期 10 s，覆盖准备、编译、测试点运行和结果整理；心跳使用独立 Session 和独立事务，不与执行路径并发共享 Session。finalize 前停止发起新心跳并收束在途心跳，再验资格；条件不匹配或续租无法确认时停止新测试点、放弃后续业务回写并尽力终止本代容器。无法确认不等于租约已到期，10 s 也不是调度硬上界。
 
 - 汇总得到最终 Verdict，交给 finalize() 写回（8.1）。
 
-- 无论成功、失败、超时，都在 finally 中删除容器与临时目录。
+- 无论成功、失败、超时，都在 finally 中尽力清理本代容器与临时目录，不能删除后继资源；失联或进程退出不保证即时完成，具体代次资源归属和孤儿回收由 W5-4 兑现。
 
 ### 7.5 回收与清理
 
@@ -550,35 +550,35 @@ v1.1 变更｜幂等拆成四层；新增 lease、attempts 围栏、补偿扫描
 | 层 | 要防止什么 | 机制 |
 | --- | --- | --- |
 | 提交请求 | 用户重复点击、网络重试造成多条提交 | Idempotency-Key 必填；所有查询限定 user_id，(user_id, idempotency_key) 唯一索引兜底，不同用户可复用同 key。仅通过前置护栏并识别为重放后忽略请求体差异，返回原 submission_id、202 和 Idempotent-Replayed: true；不新增提交或增加两种 attempts，不覆盖原快照/request_id，不主动入队。短读、父锁后二次查询及目标 1062 回滚后新事务回读见 5.1/11.6。仅“首次 key 未命中 + 题目不存在 + 另一请求随后同用户同 key 创建”保留可能 422 的窗口，无对应父行锁、无 INSERT、无 1062，不扩大 best-effort 补查；其余接口及待后续项见 11.4.1，key 比较与保留见 9.6。 |
-| 任务领取 | broker 重复投递、补偿重复入队造成重复判题 | claim 是 WHERE status='QUEUED' 的条件更新；行数为 0 的 Worker 直接结束。 |
-| 终态写入 | 旧 Worker 复活后覆盖新结果 | finalize 的条件是 status='RUNNING' AND attempts=:我领取时的值；行数为 0 则丢弃结果。 |
+| 任务领取 | broker 重复投递、补偿重复入队造成竞争领取 | 按 8.1 锁行后条件更新 QUEUED → RUNNING，同事务取得新 attempts，确认 COMMIT 后执行；重复消息按当前状态领取，重新 QUEUED 时可合法进入新代次，消息本身不授予资格。 |
+| 终态写入 | 旧执行无资格时仍写结果或覆盖后继结果 | finalize 在锁行后另取数据库时间，检查 RUNNING、自己的 attempts/worker_id 及 lease_expires_at 大于该时间；条件拒绝不写终态、明细或首次 AC；提交未知不假定成功或盲目重写。 |
 | 排行榜计分 | 同一用户反复 AC 同一题而重复加分 | user_problem_stats 上 WHERE solved=0 的条件更新；受影响行数为 1 才算首次通过；榜单用 ZADD … GT 写入。 |
 
-三条核心 SQL（示意，非最终实现）：
+三条核心 SQL（仅示意锁定后的条件写入，不能独立执行）：每次在新短事务中先按 id 执行 SELECT ... FOR UPDATE 读取当前提交行，取得锁后另发 SELECT NOW(3) 取得 :lease_now，连接统一 UTC；不得把等待锁前的 NOW() 当作锁后时间。claim 在同事务取得更新后的 attempts/worker_id，确认 COMMIT 后执行。Worker 的续租、finalize、主动重试重置和失败写入均须匹配 RUNNING、代次、所有者及 lease_expires_at > :lease_now；扫描接管在锁后按 <= :lease_now 重检（8.3）。资格保证止于该锁内判定点，同一已通过判定的短事务可在到期后提交，不承诺 COMMIT 应答时仍有效，也不允许到期后新获写入资格；不得持事务运行容器。条件不匹配与数据库异常、COMMIT 结果未知分开处理；后两者令当前执行退让，不盲目重写或主动投递，清理不证明远端回滚。
 
 ```sql
--- claim：只有一个 Worker 能把 QUEUED 改为 RUNNING
+-- claim：已锁当前行并取得锁后时间；同事务取得新代次，确认提交后才能执行
 UPDATE submissions
    SET status='RUNNING', attempts=attempts+1, worker_id=:wid,
-       started_at=NOW(3), lease_expires_at=NOW(3) + INTERVAL :lease SECOND
+       started_at=:lease_now, lease_expires_at=:lease_now + INTERVAL :lease SECOND
  WHERE id=:sid AND status='QUEUED';
--- 受影响行数 = 0 → 已被他人处理或已是终态，任务直接结束
+-- 行数 0 → 条件不匹配；行数 1 仅表示更新命中，COMMIT 未确认仍不得执行
 ```
 
 ```sql
--- renew_lease：每个测试点之后续租；行数 = 0 → 已被接管，立即中止
+-- renew_lease：独立周期心跳；条件拒绝或结果无法确认均令本执行退让
 UPDATE submissions
-   SET lease_expires_at = NOW(3) + INTERVAL :lease SECOND
- WHERE id=:sid AND status='RUNNING' AND attempts=:my_attempt;
+   SET lease_expires_at = :lease_now + INTERVAL :lease SECOND
+ WHERE id=:sid AND status='RUNNING' AND attempts=:my_attempt AND worker_id=:my_worker AND lease_expires_at > :lease_now;
 ```
 
 ```sql
--- finalize：以 attempts 作围栏回写终态；行数 = 1 才继续写明细与计分
+-- finalize：先收束心跳再锁内验资格；命中后同事务写明细和首次 AC
 UPDATE submissions
    SET status=:verdict, passed_cases=:p, total_cases=:t,
        runtime_ms=:rt, memory_kb=:mem, error_code=:ec, error_message=:em,
-       finished_at=NOW(3), lease_expires_at=NULL
- WHERE id=:sid AND status='RUNNING' AND attempts=:my_attempt;
+       finished_at=:lease_now, lease_expires_at=NULL
+ WHERE id=:sid AND status='RUNNING' AND attempts=:my_attempt AND worker_id=:my_worker AND lease_expires_at > :lease_now;
 ```
 
 首次 AC 判定（与 finalize 在同一事务内）：
@@ -596,35 +596,35 @@ UPDATE user_problem_stats
 | --- | --- | --- |
 | 容器启动失败、Docker 暂不可用 | 是，有限次数 | 属于基础设施瞬时错误（InfraError）。 |
 | Redis 临时不可用 | 是，按退避 | 入队失败由补偿扫描兜底，注意避免重复入队的副作用（claim 已保证无害）。 |
-| MySQL 暂时连接失败 | 是，有限次数 | 确保事务回滚；连接池使用 pool_pre_ping。 |
+| MySQL 暂时连接失败 | 是，有限次数 | pool_pre_ping 仅检测借出连接，不能确认在途事务结果；Worker 资格无法确认时当前执行退让，清理不证明远端回滚，不盲目重写。后续重试与恢复边界交 W5-3。 |
 | Worker 崩溃 / lease 过期 | 是，由扫描器接管 | 不依赖任务自己重试（8.3）。 |
 | 代码编译错误 | 否 | 属于用户提交问题。 |
 | 答案错误 / 运行时错误 | 否 | 不属于系统级失败。 |
 | 超时 / 内存超限 / 输出超限 | 否 | 判题本身完成了“超限”判定；不应无限重跑。 |
 
-- 重试 = 把状态改回 QUEUED，并带退避重新入队。计数统一使用 attempts（每次 claim 加 1），上限初始建议 3；Celery 自身的 max_retries 不作为预算。
+- 重试 = 把状态改回 QUEUED，并带退避重新入队。Worker 主动重置须通过 8.1 的锁内有效资格检查；重置本身不增加 attempts，计数统一在每次 claim 加 1，上限初始建议 3；Celery 自身的 max_retries 不作为预算，具体门槛与退避交 W5-3。
 
 - 退避初始建议：第 1 次失败后约 5 s，第 2 次约 20 s，之后约 60 s。
 
-- 次数用尽或不可重试的系统错误：RUNNING → FAILED，写入 error_code。
+- 次数用尽或不可重试的系统错误：RUNNING → FAILED，写入 error_code；Worker 主动标记须通过 8.1 的有效资格检查，扫描器则按 8.3 的到期接管条件处理。资格拒绝或无法确认不能据此写 FAILED。
 
-- 改回 QUEUED 与重新入队不是原子的；二者之间失败，由补偿扫描接管。
+- 改回 QUEUED 与重新入队不是原子的；仅在状态事务 COMMIT 已确认后投递，二者之间失败由补偿扫描接管；结果未知不主动投递，也不把清理当作远端回滚证明。
 
 重试边界：　重试服务故障，不重试用户代码错误；所有重试必须有限次，并带退避策略。
 
 ### 8.3 补偿与崩溃恢复
 
-所有恢复动作由 Celery Beat 触发，在 maintenance 队列执行。每个动作都是幂等的条件更新，即使扫描器重复执行、误起两个 Beat，也不会造成重复判题。
+所有恢复动作由 Celery Beat 触发，在 maintenance 队列执行。扫描只产生候选；修改时在独立短事务中按提交 ID 锁行，锁后另取数据库时间并重检当前状态、候选代次及资格。重复扫描不能重复提交同一次条件状态转移；围栏保护业务写入，不承诺故障时旧、新沙箱绝不重叠。
 
 | 作业 | 周期 | 扫描条件 | 动作 |
 | --- | --- | --- | --- |
 | requeue_stale_queued | 30 s | status='QUEUED' AND queued_at &lt; NOW() - 阈值（初始建议 120 s），每次最多 100 条 | 条件更新 queued_at=NOW(), enqueue_count+1 成功后重新入队；enqueue_count 达到上限（初始建议 5）则标记 FAILED（ENQUEUE_EXHAUSTED）。 |
-| recover_expired_running | 30 s | status='RUNNING' AND lease_expires_at &lt; NOW()，每次最多 100 条 | attempts 未达上限：条件更新回 QUEUED 并重新入队；达到上限：标记 FAILED（WORKER_LOST）。 |
+| recover_expired_running | 30 s | 候选 status='RUNNING' AND lease_expires_at &lt;= NOW(3)，每次最多 100 条 | 按 8.1 锁行后另取时间，重检候选 attempts/worker_id、当前 RUNNING 及 lease_expires_at &lt;= :lease_now；未达上限则回 QUEUED（不加 attempts），确认 COMMIT 后重新入队；达到上限按同样接管检查标记 FAILED（WORKER_LOST）。条件拒绝跳过，异常或提交未知不主动投递；门槛与恢复上界交 W5-3。 |
 | cleanup_orphans | 5 min | 带 oj.judge=1 标签的存活容器；超龄临时目录 | 强制删除容器与目录，见 7.5。 |
 | rebuild_ranking | 每日低峰 + 管理员触发 | 全量读取 user_problem_stats | 写入临时 key 后 RENAME 原子替换（10.4）。 |
 | refresh_ranking_user | 按需 | 首次 AC 后 ZADD 失败的用户 | 重新计算该用户 score 并 ZADD … GT，带重试。 |
 
-阈值的取舍：　requeue_stale_queued 的阈值必须大于“正常排队时间”，否则队列积压时会产生大量重复消息；重复消息虽然无害（claim 保证只判一次），但会让队列膨胀。enqueue_count 上限用来在“Worker 长时间全部不可用”时让提交体面地失败，而不是永远 QUEUED。W5-1 明确：已持久化未入队由补偿负责，重放不主动入队，也不刷新 queued_at 或增加 enqueue_count；重放后仍可能等待 stale 阈值。120 s 是初始建议阈值，不是固定恢复上界，实际还受扫描周期、批次、积压及依赖可用性影响；恢复上界交 W5-3 复核。
+阈值的取舍：　requeue_stale_queued 的阈值必须大于“正常排队时间”，否则队列积压时会产生大量重复消息；重复消息虽然无害（claim 控制有效领取，围栏保护业务写入，不承诺沙箱绝不重叠），但会让队列膨胀。enqueue_count 上限用来在“Worker 长时间全部不可用”时让提交体面地失败，而不是永远 QUEUED。W5-1 明确：已持久化未入队由补偿负责，重放不主动入队，也不刷新 queued_at 或增加 enqueue_count；重放后仍可能等待 stale 阈值。120 s 是初始建议阈值，不是固定恢复上界，实际还受扫描周期、批次、积压及依赖可用性影响；恢复上界交 W5-3 复核。
 
 ### 8.4 Celery 配置基线
 
@@ -672,14 +672,14 @@ Worker 启动参数（初始建议）：celery -A app.tasks.celery_app worker -Q
 
 | # | 场景 | 会发生什么 | 结果 |
 | --- | --- | --- | --- |
-| 1 | broker 重复投递同一 submission_id | 第二个 Worker 的 claim 受影响行数为 0 | 直接结束，不重复判题 |
-| 2 | Worker 在容器运行中被 kill -9 | lease 过期 → recover 扫描回到 QUEUED 并重新入队 → 重新判题；原消息在 visibility_timeout 后迟到，claim 失败 | 提交收敛到终态 |
-| 3 | 旧 Worker 因 GC 暂停/网络分区后“复活”并回写 | finalize 的 attempts 围栏不匹配，行数为 0 | 丢弃过期结果并清理容器 |
+| 1 | broker 重复投递同一 submission_id | 当前 RUNNING 或终态时 claim 条件不匹配；当前重新 QUEUED 时，迟到或重复消息也可竞争领取新代次 | 确认取得新代次后才执行；不把每条迟到消息一概判为失败，不承诺沙箱绝不重叠 |
+| 2 | Worker 在容器运行中被 kill -9 | lease 到期 → recover 锁后重检，按 8.3 预算恢复 QUEUED 并确认提交后投递；下一次 claim 才增加 attempts；原消息迟到后按当前状态处理 | 后续恢复收敛条件及上界交 W5-3，不把 broker 重投当作执行权 |
+| 3 | 旧 Worker 因 GC 暂停/网络分区后“复活”并回写 | 锁后按 RUNNING、领取代次、所有者和有效租约判定；尚未接管但已到期也无资格，不限于 attempts 已改变 | 丢弃无资格结果并仅清理本代资源；数据库异常或提交未知单独退让，不伪称明确围栏拒绝 |
 | 4 | 提交事务已确认 COMMIT，但入队失败（Redis 抖动） | 创建仍返回 202；重放只返回原提交，不主动入队；满足 stale 条件后由扫描补偿 | 与 COMMIT 应答不明分开；stale 阈值不是固定恢复上界 |
 | 5 | 同一用户同时 AC 同一题两次 | solved=0 的条件更新只有一个事务得到行数 1 | 只计一次分、只更新一次榜单 |
 | 6 | 同一用户同时首次 AC 两道不同题 | 两个 ZADD … GT 可能乱序到达 | 较小的分数被忽略，较大的保留 |
 | 7 | Redis 重启且数据丢失（无持久化） | 队列消息丢失；缓存清空；榜单清空；限流计数清零 | QUEUED 被补偿；榜单重建；缓存回源；限流自然恢复 |
-| 8 | MySQL 短暂断开 | 连接池 pool_pre_ping 重连；Worker 把它当作 InfraError 重试；API 返回 503 | 有限次重试后恢复 |
+| 8 | MySQL 短暂断开 | pool_pre_ping 不能确认在途事务；Worker 资格无法确认则当前执行退让，不盲目重写；API 仍按 11.1/11.4.1 的既有错误契约应答 | 不以异常或清理推定已回滚，后续有限重试与恢复交 W5-3 |
 | 9 | 同一用户重复或并发提交同一个 Idempotency-Key | 通过前置护栏后查重放；创建竞争仅精确识别 uk_sub_user_idempotency 的 1062，完整回滚后新事务回读（5.1/11.6） | 成功重放返回原 submission_id、202 和重放头；不重复写入、计数或主动入队；题目不存在窗口按 11.4.1 保留 |
 | 10 | Docker daemon 不可用 | 容器创建失败 → InfraError → 退避重试 | attempts 用尽后 FAILED（INFRA_ERROR） |
 
@@ -1535,6 +1535,7 @@ JUDGE_IMAGE_PYTHON=oj-judge-python:1
 JUDGE_IMAGE_CPP=oj-judge-cpp:1
 JUDGE_WORK_DIR=/var/oj/judge-work     # 宿主机与 Worker 容器内路径一致
 JUDGE_LEASE_SECONDS=60
+JUDGE_HEARTBEAT_SECONDS=10
 JUDGE_MAX_ATTEMPTS=3
 ```
 
@@ -1575,11 +1576,11 @@ MVP 允许发布期间短暂停机，不追求零停机发布。
 | submission.result_unknown | API | 记录本次请求的 COMMIT 结果未确认；不是创建、重放或判题失败事件；不据本地已分配 ID 宣称持久化成功 |
 | submission.cleanup_slow | API | 应用旧资源清理超过 2 秒时告警；不据此强行归还连接或宣称远端回滚、锁释放 |
 | task.enqueued / enqueue.compensated | API / 维护任务 | 入队与补偿入队 |
-| task.claimed / task.claim_lost | Worker | 领取成功 / 被他人处理 |
+| task.claimed / task.claim_lost | Worker | 分别记录已确认提交的领取和条件不匹配；异常或 COMMIT 结果未知单独记录阶段、attempt、worker_id 及未确认结果，不混为领取成功或明确失权 |
 | container.started / container.finished | Worker | 每个测试点的容器生命周期与耗时 |
-| verdict.final | Worker | 最终结论、通过用例数、耗时 |
-| task.retry / lease.expired / task.failed | Worker / 维护任务 | 重试、租约过期、最终失败 |
-| finalize.fenced | Worker | 过期 Worker 回写被围栏拒绝 |
+| verdict.final | Worker | 仅在 finalize COMMIT 已确认后记录最终结论、通过用例数及耗时；未知不得记为已确认终态 |
+| task.retry / lease.expired / task.failed | Worker / 维护任务 | 到期按锁内检查记录，重试或失败状态变更以 COMMIT 确认为准；不以心跳异常直接推定到期或 FAILED |
+| finalize.fenced | Worker | 记录锁内资格不匹配，包含状态、代次、所有者或到期原因；不把数据库异常或提交未知包装为明确围栏拒绝，清理不证明远端回滚 |
 
 #### 耗时与队列指标
 
@@ -1649,7 +1650,7 @@ v1.1 变更｜新增判题与沙箱样例集、故障演练清单；压测方案
 
 新增 v1.2 验收：禁用/降权下一次鉴权即生效；隐藏输入经 stderr 回显仍不外泄；在途编辑与并发提交约束成立；历史提交限制快照不变；追踪 ID 与幂等键独立。管理员创建命令不保存或输出明文密码。
 
-必须覆盖的几个“会出事”的测试：　① 同一用户并发 AC 同一题，只计一次分；② 用一个非管理员账号请求全部接口，响应与缓存里没有隐藏用例；③ 两个 Worker 同时 claim 同一提交，只有一个成功；④ 旧 Worker 的 finalize 被 attempts 围栏拒绝；⑤ 补偿扫描不会对已终态的提交重新入队。
+必须覆盖的几个“会出事”的测试：　① 同一用户并发 AC 同一题，只计一次分；② 用一个非管理员账号请求全部接口，响应与缓存里没有隐藏用例；③ 两个 Worker 对同一 QUEUED 状态竞争 claim，只有一个确认取得该轮资格；④ 旧 Worker 的续租、finalize、主动重置和失败写入都受状态、代次、所有者及租约约束；⑤ 补偿扫描不会对已终态的提交重新入队；⑥ 锁等待跨到期及等于到期边界；⑦ 长测试点周期心跳及与 finalize 的收束；⑧ 资格操作异常或提交未知时退让，独立观察实际数据库结果。
 
 ### 15.2 判题样例集与故障演练
 
@@ -1679,8 +1680,8 @@ v1.1 变更｜新增判题与沙箱样例集、故障演练清单；压测方案
 
 | 演练 | 操作 | 期望表现 |
 | --- | --- | --- |
-| Worker 崩溃 | 判题进行中 kill -9 Worker | lease 过期后被接管并重判，最终终态；无孤儿容器遗留超过阈值 |
-| 重复消息 | 手工对同一 submission_id 入队两次 | 只判一次；第二个 Worker 记录 task.claim_lost |
+| Worker 崩溃 | 判题进行中 kill -9 Worker | 到期后扫描器锁内重检，按既有预算恢复并由新 claim 取得新代次；清理不误删后继资源，孤儿回收仍须按 7.5/W5-4 验证，不承诺即时清理 |
+| 重复消息 | 对同一 submission_id 重复投递，分别覆盖 RUNNING、终态及恢复后的 QUEUED | 前两者 claim 条件不匹配；QUEUED 可合法领取新代次，只有已确认领取才执行；日志区分成功、条件拒绝与未知 |
 | 入队失败 | 提交时临时停止 Redis，随后恢复 | COMMIT 已确认时创建仍返回 202；重放不主动入队，恢复后 stale 扫描补偿；阈值不是固定恢复上界 |
 | COMMIT 应答不明 | 在 COMMIT 阶段注入传输故障或应答丢失，独立观察数据库结果及同 key 后续请求 | 分别覆盖实际已提交、实际未提交、仍未结束或无法确认；API 未确认且满足响应条件时尝试规定的 503 body/headers，无 ID、202、重放头。验证无内部回查或主动投递，同 key 后续请求不重复创建或增加提交次数，成功重放沿用方案 B；不以 M1 pre-COMMIT 注入替代 |
 | commit() 等待与取消 | 在发送或等待应答阶段制造阻塞，并覆盖内部回调、残余 flush 等阶段 | 5 秒仅申请协作式取消；按证据区分已知失败与结果未知，分别观察调用退出、清理及 HTTP 条件，不断言 5 秒或 7 秒内收到 503 |
@@ -1689,9 +1690,14 @@ v1.1 变更｜新增判题与沙箱样例集、故障演练清单；压测方案
 | 客户端断开或进程退出 | 分别在 COMMIT 发送、等待应答、确认成功后响应发送及清理阶段制造断开或退出 | 不承诺 503、送达或退出时清理完成；COMMIT 已确认时沿用正常投递责任，未确认时不主动投递；独立核对数据库结果，同 key 后续请求和补偿规则不变 |
 | Redis 重启并清空 | FLUSHALL 后观察 | 排队中的提交被补偿；榜单可重建；缓存回源 |
 | 榜单漂移 | 手工删除 ZSET | 触发重建后与 MySQL 一致 |
-| MySQL 短断 | 停止 MySQL 10–30 s 再启动 | API 503 后恢复；Worker 重试 |
+| MySQL 短断 | 停止 MySQL 10–30 s 再启动 | Worker 资格无法确认时本执行退让，不盲目重写或推定回滚；API 按既有契约处理，后续恢复与重试交 W5-3 |
 | Docker 不可用 | 停止 Docker 守护进程后提交 | InfraError 退避重试，用尽后 FAILED（INFRA_ERROR） |
-| 过期 Worker 回写 | 用测试桩模拟旧 attempts 回写 | 围栏拒绝，记录 finalize.fenced |
+| 过期 Worker 回写 | 分别模拟旧 attempts、错误 worker_id、非 RUNNING、同代次租约已到期 | 资格拒绝不写终态、明细、首次 AC，记录 finalize.fenced；异常或提交未知独立记录，清理仅作用于本代资源 |
+| 到期尚未接管 | 暂停扫描，令租约到期后使用相同代次续租或 finalize | 即使 attempts 未变也无资格；不新增明细或计分，到期不自动改变数据库 RUNNING 状态 |
+| 长测试点心跳 | 单点时限 90 s，覆盖准备、编译和结果整理中的续租 | 独立周期心跳保持有效资格，不以测试点结束为唯一续租点，不断言固定续租次数或 10 s 内完成调度 |
+| 锁等待跨到期 | 让续租或 finalize 在到期前开始、到期后才取得行锁，并覆盖恰等于到期 | 锁后单独采样时间；有效使用 >，接管使用 <=，不能沿用等锁前的时间；同一已获准短事务晚提交不等于允许到期后新获资格 |
+| 续租、接管与终态竞争 | 分别让续租、扫描接管或 finalize 先取得锁并确认提交 | 续租延长后扫描跳过；接管后旧执行无资格；finalize 已提交终态不得被恢复；不同代次资源互不误删 |
+| Worker 资格事务结果未知 | 分别对 claim、续租和 finalize 注入 COMMIT 应答丢失 | 独立观察已提交、未提交、仍未知；当前执行不盲目重写，claim 未确认不执行；续租未知不证明到期，当前执行不再尝试 finalize；不套用 API 的 503 契约 |
 
 每次演练把“操作、现象、日志片段、结论”写入 docs/evidence/failure-drills.md，这是面试时最有说服力的材料。
 
@@ -2012,9 +2018,9 @@ v1.2 变更｜新增 ADR-013 ～ ADR-016，并在 docs/adr/ 中为这四条各�
 
 #### 可靠性
 
-- [ ] claim / finalize 为条件更新；旧 Worker 的回写被 attempts 围栏拒绝
+- [ ] claim 确认提交后才执行；续租、finalize、主动重置和失败写入按锁后数据库时间检查状态、代次、所有者及有效租约；资格未知时当前执行退让
 
-- [ ] kill Worker 后 lease 过期被接管，提交收敛到终态
+- [ ] 60 s 租约与 10 s 独立周期心跳覆盖长操作；扫描按锁后到期条件重检接管，不误重置终态；资源归属及恢复收敛分别完成 W5-4/W5-3 验证
 
 - [ ] Worker 失败可有限次重试，次数用尽进入 FAILED
 
