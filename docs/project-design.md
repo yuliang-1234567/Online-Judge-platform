@@ -156,7 +156,7 @@ v1.1 变更｜新增 FR-11（测试数据保护）、FR-12（运维可见）；F
 | 维度 | 要求 | 验收方式 |
 | --- | --- | --- |
 | 正确性 | 同一题目、同一测试数据下，判题结果可重复；态最终收敛到终态。状 | 集成测试 + 判题样例集（15.2） |
-| 可恢复性 | Worker 崩溃、Redis 重启、入队失败后，提交在“lease 时长 + 扫描周期 + 判题时长”内重新得到结果或进入 FAILED（初始建议：lease 60 s、扫描 30 s）。 | 故障演练（15.2） |
+| 可恢复性 | 在依赖可用、Beat 与维护消费者正常，且未决事务退出、扫描/判题积压及锁等待具有可验证边界的前提下，按剩余租约、退避/stale、扫描、投递、判题排队、执行及事务退出分解恢复预算；不承诺固定秒数，不将“lease 时长 + 扫描周期 + 判题时长”作为无条件上界（8.3、15.2）。 | 故障演练（15.2） |
 | 安全性 | 代码执行与宿主机隔离；限制 CPU/内存/时间/进程/输出；不向代码提供宿主机敏感权限；期望输出不进入容器。 | 沙箱样例集 + 安全检查清单 |
 | 数据保护 | 隐藏测试数据不外泄；密码以强哈希存储；日志不含密码、Token、完整代码。 | 接口测试 + 日志检查 |
 | 可用性 | API 与判题 Worker 解耦，Worker 短时不可用不拖垮 Web API；API 不可用时已入队任务仍可完成。 | 停止/恢复 Worker 测试 |
@@ -320,7 +320,7 @@ v1.1 变更｜提交流程改为“落库事务 → 提交后入队 → claim �
 | OUTPUT_LIMIT | 输出超出上限（v1.1 新增） | 终态 |
 | FAILED | 系统异常：重试用尽、Worker 丢失、入队耗尽等，error_code 说明原因 | 终态 |
 
-FAILED 的 error_code：INFRA_ERROR（容器启动失败、Docker 不可用等，重试用尽）、WORKER_LOST（lease 多次过期）、ENQUEUE_EXHAUSTED（反复补偿入队仍无人领取）、INTERNAL_ERROR（未预期异常）。
+FAILED 的 error_code：INFRA_ERROR（容器启动失败、Docker 不可用等，重试用尽）、WORKER_LOST（领取预算已用尽时租约到期）、ENQUEUE_EXHAUSTED（反复补偿入队仍无人领取）、INTERNAL_ERROR（未预期异常）。
 
 状态机性质：　(1) 终态不可再变；(2) 所有状态变更都是“带前置条件的 UPDATE”，受影响行数为 0 就当作“别人已处理”；(3) 只有 RUNNING → QUEUED 一条回退边，且只能由“持有最新 attempts 的 Worker”或“扫描器”执行。
 
@@ -602,29 +602,29 @@ UPDATE user_problem_stats
 | 答案错误 / 运行时错误 | 否 | 不属于系统级失败。 |
 | 超时 / 内存超限 / 输出超限 | 否 | 判题本身完成了“超限”判定；不应无限重跑。 |
 
-- 重试 = 把状态改回 QUEUED，并带退避重新入队。Worker 主动重置须通过 8.1 的锁内有效资格检查；重置本身不增加 attempts，计数统一在每次 claim 加 1，上限初始建议 3；Celery 自身的 max_retries 不作为预算，具体门槛与退避交 W5-3。
+- 领取预算为 3 次 claim，包含首次；数据库实际提交的 claim 均使 attempts 加 1，包括提交应答丢失、尚未启动沙箱的领取。claim 条件检查 attempts < 3；状态重置、补偿和消息重投不增加 attempts。Worker 主动重置仍须通过 8.1 的有效资格检查；Celery max_retries 不作为业务预算。
 
-- 退避初始建议：第 1 次失败后约 5 s，第 2 次约 20 s，之后约 60 s。
+- 退避为第 1、2 次可重试系统故障后分别等待 5 s、20 s，没有第 3 档 60 s；重置 QUEUED 的同一事务以本次锁后数据库时间计算并保存 retry_not_before，同时置 enqueue_count=1、queued_at=本次时间，不增加 attempts。截止时间可能在 COMMIT 应答前已到，不承诺提交确认后另等完整 5/20 s；投递可携带已保存的 ETA，不重新累加退避，旧消息同样受数据库门槛约束。
 
-- 次数用尽或不可重试的系统错误：RUNNING → FAILED，写入 error_code；Worker 主动标记须通过 8.1 的有效资格检查，扫描器则按 8.3 的到期接管条件处理。资格拒绝或无法确认不能据此写 FAILED。
+- 第 3 次可重试系统故障，Worker 仍有有效资格时写 FAILED/INFRA_ERROR；领取预算已为 3 且租约到期时，由扫描器按 8.3 写 FAILED/WORKER_LOST。确定不可重试的系统错误沿用既有失败分支，用户代码结果写对应终态；资格拒绝或无法确认时当前执行退让，不强写 FAILED。
 
-- 改回 QUEUED 与重新入队不是原子的；仅在状态事务 COMMIT 已确认后投递，二者之间失败由补偿扫描接管；结果未知不主动投递，也不把清理当作远端回滚证明。
+- 状态重置与消息投递不原子；仅在状态事务 COMMIT 已确认后投递，失败交补偿扫描。结果未知时不主动投递、不盲目重写，不推定事务已回滚；重放不重置 retry_not_before、queued_at 或 enqueue_count，不重复计数或主动入队。
 
 重试边界：　重试服务故障，不重试用户代码错误；所有重试必须有限次，并带退避策略。
 
 ### 8.3 补偿与崩溃恢复
 
-所有恢复动作由 Celery Beat 触发，在 maintenance 队列执行。扫描只产生候选；修改时在独立短事务中按提交 ID 锁行，锁后另取数据库时间并重检当前状态、候选代次及资格。重复扫描不能重复提交同一次条件状态转移；围栏保护业务写入，不承诺故障时旧、新沙箱绝不重叠。
+所有恢复动作由 Celery Beat 触发，在 maintenance 队列执行。扫描只产生候选；修改时用独立短事务按提交 ID 锁行，锁后另取数据库时间，重检当前状态、候选代次及本动作资格；QUEUED 补偿还须核对候选 enqueue_count、queued_at、retry_not_before，防止旧候选或重复 Beat 重复预留。只有状态修改确认提交后才能投递；异常或提交未知不主动投递，围栏保护业务写入，不承诺故障时沙箱绝不重叠。
 
 | 作业 | 周期 | 扫描条件 | 动作 |
 | --- | --- | --- | --- |
-| requeue_stale_queued | 30 s | status='QUEUED' AND queued_at &lt; NOW() - 阈值（初始建议 120 s），每次最多 100 条 | 条件更新 queued_at=NOW(), enqueue_count+1 成功后重新入队；enqueue_count 达到上限（初始建议 5）则标记 FAILED（ENQUEUE_EXHAUSTED）。 |
-| recover_expired_running | 30 s | 候选 status='RUNNING' AND lease_expires_at &lt;= NOW(3)，每次最多 100 条 | 按 8.1 锁行后另取时间，重检候选 attempts/worker_id、当前 RUNNING 及 lease_expires_at &lt;= :lease_now；未达上限则回 QUEUED（不加 attempts），确认 COMMIT 后重新入队；达到上限按同样接管检查标记 FAILED（WORKER_LOST）。条件拒绝跳过，异常或提交未知不主动投递；门槛与恢复上界交 W5-3。 |
+| requeue_stale_queued | 30 s | status='QUEUED'，且 GREATEST(queued_at, COALESCE(retry_not_before, queued_at)) &lt; NOW(3) - INTERVAL :stale SECOND（阈值初始建议 120 s），每次最多 100 条 | 锁后按本次数据库时间重检同样条件及候选版本；enqueue_count &lt; 5 时增加 1 并更新 queued_at，确认 COMMIT 后投递；已为 5 时，须最后一轮仍经过完整 stale 窗口且无人领取，才标记 FAILED/ENQUEUE_EXHAUSTED。补偿不改 retry_not_before、不加 attempts；条件拒绝跳过，异常或提交未知不主动投递。 |
+| recover_expired_running | 30 s | 候选 status='RUNNING' AND lease_expires_at &lt;= NOW(3)，每次最多 100 条 | 按 8.1 锁后重检候选 attempts/worker_id、当前 RUNNING 及租约到期；attempts 为 1/2 时回 QUEUED，以本次数据库时间保存 5/20 s 的 retry_not_before，置 enqueue_count=1、queued_at=本次时间，不增加 attempts；attempts 为 3 时写 FAILED/WORKER_LOST。状态 COMMIT 确认后才投递；条件拒绝跳过，异常或提交未知不主动投递，恢复预算按 3.2 条件分解。 |
 | cleanup_orphans | 5 min | 带 oj.judge=1 标签的存活容器；超龄临时目录 | 强制删除容器与目录，见 7.5。 |
 | rebuild_ranking | 每日低峰 + 管理员触发 | 全量读取 user_problem_stats | 写入临时 key 后 RENAME 原子替换（10.4）。 |
 | refresh_ranking_user | 按需 | 首次 AC 后 ZADD 失败的用户 | 重新计算该用户 score 并 ZADD … GT，带重试。 |
 
-阈值的取舍：　requeue_stale_queued 的阈值必须大于“正常排队时间”，否则队列积压时会产生大量重复消息；重复消息虽然无害（claim 控制有效领取，围栏保护业务写入，不承诺沙箱绝不重叠），但会让队列膨胀。enqueue_count 上限用来在“Worker 长时间全部不可用”时让提交体面地失败，而不是永远 QUEUED。W5-1 明确：已持久化未入队由补偿负责，重放不主动入队，也不刷新 queued_at 或增加 enqueue_count；重放后仍可能等待 stale 阈值。120 s 是初始建议阈值，不是固定恢复上界，实际还受扫描周期、批次、积压及依赖可用性影响；恢复上界交 W5-3 复核。
+阈值与计数：stale 起点为 max(queued_at, retry_not_before)，后者为空时回退 queued_at；保留原严格小于边界。enqueue_count 按每个 QUEUED 阶段计投递预留轮次，起始 1、上限 5，重新进入 QUEUED 时重置为 1；预留不证明实际送达或发送次数，queued_at 是最近预留的事务时间。第 5 轮仍给完整等待窗口，正常积压也可能导致耗尽；enqueue_count=5 本身不禁止 claim。30 s 周期、120 s 阈值和每批 100 条仍为初始建议，不构成固定恢复上界。W5-1 明确：已持久化未入队由补偿负责，重放不主动入队，也不刷新 queued_at 或增加 enqueue_count；重放后仍可能等待 stale 阈值。恢复时间还受依赖可用性、扫描积压、锁等待、投递及判题排队影响，按 3.2 条件分解，不承诺固定秒数。
 
 ### 8.4 Celery 配置基线
 
@@ -646,7 +646,7 @@ celery_app.conf.update(
     task_default_queue="judge",
     task_queues=(Queue("judge"), Queue("maintenance")),
     task_routes={"app.tasks.maintenance.*": {"queue": "maintenance"}},
-    task_soft_time_limit=170, task_time_limit=180,   # 硬上限 ≥ 题目最坏耗时估算
+    task_soft_time_limit=190, task_time_limit=200,   # 发布预算仍为 180 s；运行与退出余量待实测
     broker_transport_options={"visibility_timeout": 3600},  # 必须大于任务硬上限
     broker_connection_retry_on_startup=True,
     timezone="UTC",
@@ -660,9 +660,9 @@ celery_app.conf.update(
 | visibility_timeout &gt; 任务硬上限 | Redis broker 靠它决定“未确认消息多久后重新投递”；设得比任务时长还短，长任务会被重复投递给另一个 Worker。 |
 | judge 与 maintenance 分队列 | 补偿与清理任务不能被积压的判题任务拖住。 |
 | 不使用 result backend | 判题结果是业务事实，写 MySQL；避免第二份状态来源。 |
-| 硬上限与题目限制挂钩 | 题目发布时估算最坏耗时 测试点数 × (时限 + 2 s) + 20 s（例如 50 个点、时限 1 s，约 170 s）；超过硬上限则拒绝发布并提示：减少测试点、降低时限，或提高硬上限并同步调大 visibility_timeout。 |
+| 硬上限与题目限制挂钩 | 发布仍按“测试点数 × (时限 + 2 s) + 20 s”估算，预算上限保持 180 s；超过发布预算则拒绝发布，提示减少测试点或降低时限。Worker 软/硬上限为 190/200 s；运行、清理及恢复边界见表后说明。 |
 
-最终兜底靠 lease 扫描，而不是 broker：　即使 broker 的重投机制按预期工作，它也要等 visibility_timeout（初始建议 1 小时）才会生效；用户不可能等这么久。所以 Worker 崩溃后的快速恢复完全依赖 8.3 的 lease 扫描，broker 的重投只是“迟到的重复消息”，由 claim 的条件更新吸收。
+表后说明：190/200 s 是任务软/硬期限，不能推导数据库已回滚、容器或连接清理已完成，也不构成恢复时限；任务级软超时不直接判为用户代码 TIME_LIMIT。业务恢复仍以 MySQL 状态机和 8.3 扫描为准；broker 重投是可能的重复消息，何时到达均须通过次数、退避和状态资格检查，不作为恢复上界或领取权来源。
 
 Worker 启动参数（初始建议）：celery -A app.tasks.celery_app worker -Q judge --concurrency=2 --pool=prefork；maintenance 队列由另一个轻量进程消费；Beat 单独一个服务。
 
@@ -1536,7 +1536,7 @@ JUDGE_IMAGE_CPP=oj-judge-cpp:1
 JUDGE_WORK_DIR=/var/oj/judge-work     # 宿主机与 Worker 容器内路径一致
 JUDGE_LEASE_SECONDS=60
 JUDGE_HEARTBEAT_SECONDS=10
-JUDGE_MAX_ATTEMPTS=3
+JUDGE_MAX_ATTEMPTS=3  # 总领取预算，含首次
 ```
 
 ```text
@@ -1559,6 +1559,16 @@ LOG_LEVEL=INFO
 - 回滚：保留上一版镜像标签；涉及不可逆迁移的发布，先做数据库备份（14.5）。
 
 MVP 允许发布期间短暂停机，不追求零停机发布。
+
+#### W5-3 迁移依赖（仅设计）
+
+- 目标列为 `retry_not_before DATETIME(3) NULL`，使用 UTC；首次为空，重试时保存截止时间，成功 claim 清空。
+
+- 当前 0001 不含该列，本节只列迁移依赖，不创建或执行迁移。
+
+- 后续另批新迁移、新 head、升降级及旧数据兼容检查；不重写 0001，不自动重置或回填历史数据。
+
+- 降级前评估程序及待重试数据对新列的依赖，不静默丢弃退避语义。
 
 ### 14.4 日志与可观测性
 
