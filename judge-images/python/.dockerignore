@@ -1,0 +1,4 @@
+# 构建上下文仅为 judge-images/python；默认拒绝，逐项放行构建说明。
+**
+!Dockerfile
+!.dockerignore
